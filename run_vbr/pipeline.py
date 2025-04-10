@@ -241,7 +241,7 @@ def run_simulation(
     folder,
     model_name,
 ):
-    path = {folder: {"data": ["Selections_Verif", "result_simulation"]}}
+    path = {folder: {"data": ["Selections_Verif", "result_simulation", "listes_detaillees"]}}
     if not os.path.exists(os.path.join(workspace.files_path, folder)):
         os.makedirs(os.path.join(workspace.files_path, folder))
     for dir in path:
