@@ -10,21 +10,25 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/RBV_package
+      url: https://pypi.org/p/rbv_package
     permissions:
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.x"
+          python-version: "3.11"
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install setuptools wheel
+        run: python -m pip install --upgrade pip build
+
       - name: Build package
         run: |
-          python setup.py sdist bdist_wheel  # Could also be python -m build
+          cd path/to/package
+          python setup.py sdist bdist_wheel
+
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
