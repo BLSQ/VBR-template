@@ -27,7 +27,7 @@ jobs:
 
       - name: Build package
         run: |
-          cd path/to/package
+          cd rbv_package
           python setup.py sdist bdist_wheel
 
       - name: Publish package distributions to PyPI
