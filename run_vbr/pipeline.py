@@ -20,7 +20,7 @@ from vbr_custom import *
 from RBV_package import rbv_environment
 
 
-@pipeline("run_VBR", name="Lancer l'algorithme de VBR")
+@pipeline("run_vbr")
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
@@ -242,6 +242,8 @@ def run_simulation(
     model_name,
 ):
     path = {folder: {"data": ["Selections_Verif", "result_simulation"]}}
+    if not os.path.exists(os.path.join(workspace.files_path, folder)):
+        os.makedirs(os.path.join(workspace.files_path, folder))
     for dir in path:
         if not os.path.exists(os.path.join(workspace.files_path, dir)):
             os.makedirs(os.path.join(workspace.files_path, dir))
