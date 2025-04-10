@@ -29,8 +29,10 @@ jobs:
 
       - name: Build package
         run: |
-          cd rbv-package
-          python setup.py sdist bdist_wheel
+          cd rbv_package
+          python -m build --sdist --wheel
+          mkdir -p ../dist
+          cp dist/* ../dist/
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
