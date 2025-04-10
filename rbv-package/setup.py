@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="rbv_package",
+    name="rbv-package",
     version="1.0.37",
     packages=find_packages(),
     description="Un package de fonction utiles pour la Vérification basée sur les risques",

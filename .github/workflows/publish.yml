@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/rbv_package
+      url: https://pypi.org/p/rbv-package
     permissions:
       id-token: write
       contents: read
@@ -27,7 +27,7 @@ jobs:
 
       - name: Build package
         run: |
-          cd rbv_package
+          cd rbv-package
           python setup.py sdist bdist_wheel
 
       - name: Publish package distributions to PyPI
