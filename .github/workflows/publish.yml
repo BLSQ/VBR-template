@@ -29,7 +29,7 @@ jobs:
 
       - name: Build package
         run: |
-          cd rbv_package
+          cd rbv-package
           python -m build --sdist --wheel
           mkdir -p ../dist
           cp dist/* ../dist/
