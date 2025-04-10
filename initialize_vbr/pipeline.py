@@ -8,12 +8,7 @@ from RBV_package import rbv_environment
 from openhexa.toolbox.dhis2 import DHIS2
 
 
-@pipeline(
-    "initialize_vbr",
-    name="Initialize VBR",
-    description="Read Hesabu configuration, extract\
-          and DHIS2 data, and initiate a class oriented model for simulations.",
-)
+@pipeline("initialize_vbr")
 @parameter("dhis_con", type=DHIS2Connection, help="Connection to DHIS2", required=True)
 @parameter("hesabu_con", type=str, help="Connection to hesabu", default="hesabu", required=True)
 @parameter(
@@ -86,7 +81,6 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
                         df = pd.read_csv(f"{workspace.files_path}/packages/{id}/{p}.csv")
                         data = pd.concat([data, df], ignore_index=True)
         data = data.merge(contracts, on="org_unit_id")
-        data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isnull())]
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
@@ -99,6 +93,10 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
+        print(data.contract_end_date.unique())
+        data.contract_end_date = data.contract_end_date.astype(int)
+        data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
+
         data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
         data["subside_sans_verification"] = data["dec"] * data["tarif"]
         data["subside_avec_verification"] = data["val"] * data["tarif"]
@@ -193,6 +191,8 @@ def save_simulation_environment(
                 nb_tot += 1
         print(f"number of orgunits= {nb_tot}")
         regions.append(group)
+    if not os.path.exists(f"{workspace.files_path}/initialization_simulation"):
+        os.makedirs(f"{workspace.files_path}/initialization_simulation")
     with open(
         f"{workspace.files_path}/initialization_simulation/{group_name}.pickle", "wb"
     ) as file:
