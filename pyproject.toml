@@ -1,6 +1,6 @@
 [project]
-name = "blsq_workshop_ds"
-version = "0.1.0"
+name = "rbv_package"
+version = "1.0.37"
 description = "Workshop collaboration repository"
 readme = "README.md"
 requires-python = ">=3.11"
