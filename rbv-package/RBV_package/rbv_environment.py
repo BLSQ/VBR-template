@@ -1,95 +1,686 @@
 import pandas as pd
-import random, json
-from difflib import get_close_matches
-from openhexa.toolbox.dhis2.periods import period_from_string, Period
-from openhexa.sdk import current_run
-from openhexa.sdk import workspace
-import requests
-import os
-import copy
-from typing import List
-import csv
+
+import dates
+
+import config_package as config
 
 
-def deserialize(content):
+class GroupOrgUnits:
     """
-    :param content: A JSON API document already
-    :returns: The JSON API document parsed
+    A class for the group of organizational units.
+
+    Attributes
+    ----------
+    cout_verification_centre: int
+        The cost of verifying a center.
+        It is inputed by the user.
+    df_verification: pd.DataFrame
+        Contains the summary results of the VBR per group.
+    members: list of Orgunit
+        List of Orgunit objects that are part of the group.
+    name: str
+        The name of the group of organizational Units.
+    proportions: dict
+        The probability of being verified per risk category.
+    qualite_indicators: list
+        The list of the indicators that are used to calculate the quality of the centers.
+        It is not currently used.
     """
-    if "errors" in content:
-        return content
 
-    if "data" not in content:
-        raise AttributeError("This is not a JSON API document")
+    def __init__(self, name, qualite_indicators):
+        self.name = name
+        self.qualite_indicators = qualite_indicators
 
-    # be nondestructive with provided content
-    content = copy.deepcopy(content)
+        self.members = []
+        self.cout_verification_centre = None
+        self.proportions = {}
+        self.df_verification = pd.DataFrame()
 
-    if "included" in content:
-        included = _parse_included(content["included"])
-    else:
-        included = {}
-    if isinstance(content["data"], dict):
-        return _resolve(_flat(content["data"]), included, set())
-    elif isinstance(content["data"], list):
-        result = []
-        for obj in content["data"]:
-            result.append(_resolve(_flat(obj), included, set()))
-        return result
-    else:
-        return None
+    def set_cout_verification(self, cout_verification_centre):
+        """
+        Set how much it costs to verify a center.
+
+        Parameters
+        ----------
+        cout_verification_centre: float
+            The cost of verifying a center. It is inputed by the user.
+        """
+        self.cout_verification_centre = cout_verification_centre
+
+    def add_ou(self, ou):
+        """
+        Add an organizational unit to the list of members.
+
+        Parameters
+        ----------
+        ou: Orgunit
+            The organizational unit to add.
+        """
+        self.members.append(ou)
+
+    def set_proportions(self, proportions):
+        """
+        Set the proportions of the different risk categories.
+
+        Parameters
+        ----------
+        proportions: dict
+            The proportions of the different risk categories.
+            The keys are the risk categories and the values are the proportions.
+        """
+        self.proportions = proportions
+
+    def get_verification_information(self):
+        """
+        Create a pandas dataframe with the information about the center and whether it will be verified or not.
+        """
+        rows = []
+
+        for ou in self.members:
+            new_row = (
+                [ou.period]
+                + [ou.id]
+                + ou.identifier_verification
+                + [ou.is_verified]
+                + [
+                    ou.diff_subsidies_decval_median_period,
+                    ou.diff_subsidies_tauxval_median_period,
+                    ou.benefice_vbr,
+                    ou.taux_validation,
+                    ou.subside_dec_period,
+                    ou.subside_val_period,
+                    ou.subside_taux_period,
+                    ou.ecart_median,
+                    ou.risk,
+                ]
+            )
+            rows.append(new_row)
+
+        self.df_verification = pd.DataFrame(rows, columns=config.list_cols_df_verfication)
+
+    def get_service_information(self):
+        """
+        Create a DataFrame with the information per service.
+        Note: the method get_gain_verif_for_period_verif has a lot of information per service.
+        If we get the information from there, we can probably create a more complete .csv
+
+        Returns
+        -------
+        df : pd.DataFrame
+            DataFrame with the information per service.
+        """
+        rows = []
+
+        for ou in self.members:
+            list_services = list(ou.quantite_window["service"].unique())
+
+            for service in list_services:
+                taux_validation = ou.quantite_window[ou.quantite_window.service == service][
+                    "taux_validation"
+                ].median()
+                if pd.isnull(taux_validation):
+                    taux_validation = ou.taux_validation
+
+                new_row = (
+                    ou.period,
+                    ou.id,
+                    ou.category_centre,
+                    hot_encode(not ou.is_verified),
+                    service,
+                    taux_validation,
+                )
+
+                rows.append(new_row)
+
+        df = pd.DataFrame(rows, columns=config.list_cols_df_services)
+        return df
+
+    def get_statistics(self, period):
+        """
+        Create the statistics for the period and Group of Organizational Units
+
+        Parameters
+        ----------
+        period: str
+            The date we are running the simulation for.
+
+        Returns
+        -------
+        stats: pd.DataFrame
+            The statistics for the period and Group of Organizational Units.
+        """
+        verified_centers = self.df_verification.bool_verified
+        vbr_beneficial = self.df_verification["benefice_complet_vbr"] < 0
+
+        nb_centers = len(self.members)
+        nb_centers_verified = self.df_verification[verified_centers].shape[0]
+
+        high_risk = len(
+            [ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"]
+        )
+        mod_risk = len([ou.id for ou in self.members if "moderate" in ou.risk])
+        low_risk = len([ou.id for ou in self.members if ou.risk == "low"])
+
+        cost_verification_vbr = self.cout_verification_centre * nb_centers_verified
+        cost_verification_syst = self.cout_verification_centre * nb_centers
+
+        subsides_vbr = (
+            self.df_verification[verified_centers]["subside_val_period"].sum()
+            + self.df_verification[~verified_centers]["subside_taux_period"].sum()
+        )
+        subsides_syst = self.df_verification["subside_val_period"].sum()
+
+        cout_total_vbr = subsides_vbr + cost_verification_vbr
+        cout_total_syst = subsides_syst + cost_verification_syst
+
+        ratio_verif_costtotal_vbr = cost_verification_vbr / cout_total_vbr
+        ratio_verif_costtotal_syst = cost_verification_syst / cout_total_syst
+
+        nb_centre_vbr_made_money = len(
+            self.df_verification[(~verified_centers) & vbr_beneficial]["ou_id"].unique()
+        )
+        nb_centre_vbr_lost_money = len(
+            self.df_verification[(~verified_centers) & (~vbr_beneficial)]["ou_id"].unique()
+        )
+
+        money_won_by_vbr = self.df_verification[(~verified_centers) & vbr_beneficial][
+            "benefice_complet_vbr"
+        ].sum()
+
+        money_lost_by_vbr = self.df_verification[(~verified_centers) & (~vbr_beneficial)][
+            "benefice_complet_vbr"
+        ].sum()
+
+        gain_unverified_centers_for_vbr = self.df_verification[~verified_centers][
+            "diff_in_subsidies_tauxval_period"
+        ].mean()
+        gain_verified_centers_for_vbr = self.df_verification[verified_centers][
+            "diff_in_subsidies_tauxval_period"
+        ].mean()
+
+        new_row = (
+            self.name,
+            period,
+            nb_centers,
+            high_risk,
+            mod_risk,
+            low_risk,
+            nb_centers_verified,
+            cost_verification_vbr,
+            cost_verification_syst,
+            subsides_vbr,
+            subsides_syst,
+            cout_total_vbr,
+            cout_total_syst,
+            ratio_verif_costtotal_vbr,
+            ratio_verif_costtotal_syst,
+            nb_centre_vbr_made_money,
+            nb_centre_vbr_lost_money,
+            money_won_by_vbr,
+            money_lost_by_vbr,
+            gain_unverified_centers_for_vbr,
+            gain_verified_centers_for_vbr,
+        )
+
+        return new_row
 
 
-def _resolve(data, included, resolved, deep=True):
-    if not isinstance(data, dict):
-        return data
-    keys = data.keys()
-    if keys == {"type", "id"} or keys == {"type", "id", "meta"}:
-        type_id = data["type"], data["id"]
-        meta = data.get("meta")
-        resolved_item = included.get(type_id, data)
-        resolved_item = resolved_item.copy()
-        if type_id not in resolved:
-            data = _resolve(resolved_item, included, resolved | {type_id})
-        if meta is not None:
-            data = data.copy()
-            data.update(meta=meta)
-        return data
-    for key, value in data.items():
-        if isinstance(value, dict):
-            data[key] = _resolve(value, included, resolved)
-        elif isinstance(value, list):
-            if deep:
-                data[key] = [_resolve(item, included, resolved, False) for item in value]
+class Orgunit:
+    """
+    A class for the organizational unit.
+
+    Attributes
+    ----------
+    benefice_vbr: np.float64
+        Amount of money won per center with VBR. It is calculated as:
+        (amount of money the center gets with VBR_taux - amount of money the center gets with systematic verification)
+        minus (how much it costs to verify the center)
+        If it is bigger than zero, then we should not do VBR.
+    category_centre: str
+        The category of the center.
+    diff_subsidies_decval_median: np.float64
+        The median of:
+            the difference in subsidies that the center would recieve based on the declared or validated values.
+        It is calculated as: median((declared - validated) * tarif)
+        The bigger, the more extra subsidies the center would get if it wasn't verified.
+        Its calculated for all of the observation window.
+    diff_subsidies_decval_median_period: np.float64
+        The median of:
+            the difference in subsidies that the center would recieve based on the declared or validated values.
+        It is calculated as: median((declared - validated) * tarif)
+        The bigger, the more extra subsidies the center would get if it wasn't verified.
+        Its calculated for the period of the simulation.
+    diff_subsidies_tauxval_median_period: np.float64
+        The median of:
+            the difference in subsidies that the center would recieve without verification (calculated with taux)
+            and with verification.
+        The bigger, the more extra subsidies the center would get if it wasn't verified.
+        Its calculated for the period of the simulation.
+    ecart_median: np.float64
+        The median of the ecart for the center.
+        The ecart measures the difference between the declared, verified and validated values.
+        0.4*(ecart_dec_ver) + 0.6*(ecart_ver_val) with
+        ecart_dec_ver = (dec - ver) / ver & ecart_ver_val = (ver - val) / ver
+        The closer to 1, the more the center is lying.
+    ecart_median_per_service: pd.DataFrame
+        The median of the ecart for each service for the center.
+        The ecart measures the difference between the declared, verified and validated values.
+        0.4*(ecart_dec_ver) + 0.6*(ecart_ver_val) with
+        ecart_dec_ver = (dec - ver) / ver & ecart_ver_val = (ver - val) / ver
+        The closer to 1, the more the center is lying.
+    id: str
+        The id of the organizational unit.
+    identifier_verification: list
+        List with the ID/names of the level 2, 3, 4, 5 and 6 of the center.
+    is_verified: bool
+        True if the center will be verified, False otherwise.
+    month: str
+        The month we are running the simulation for.
+        (if period_type == "month", it is the same as self.period)
+    nb_periods :int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    nb_periods_verified: array
+        Periods in which the Organizational Unit has been verified.
+    nb_services_risky: int
+        Number of services that are not at low risk.
+    period: str
+        The date we are running the simulation for.
+    period_type: str
+        Frequency of the simulation, either "month" or "quarter".
+        It is inputed by the user.
+    qualite: pd.DataFrame
+        The qualitative data for the center.
+        Right now we don't do anything with it.
+    qualite_indicators: list
+        The list of the indicators that are used to calculate the quality of the centers.
+        Right now we don't do anything with them.
+    qualite_window: pd.DataFrame
+        Qualitative data for the observation window.
+        Right now we don't do anything with it.
+    quantite: pd.DataFrame
+        The quantitative data for the center.
+    quantite_window: pd.DataFrame
+        Quantitative data for the observation window.
+    quarter: str
+        The quarter we are running the simulation for.
+        (if period_type == "quarter", it is the same as self.period)
+    risk: str
+        The overall risk of the center.
+    risk_gain_median: str
+        The risk of the center based on how much we win by verifying it.
+    risk_quantite: str
+        The quantity risk of the center.
+    subside_dec_period: np.float64
+        The total subside the center would get based only on the declared values.
+        It is calcualted for the period of the simulation.
+    subside_taux_period: np.float64
+        The total subside the center would get based on the declared values, but taking into account the taux of the center.
+        (The subside the center would get without verification)
+        It only takes into account the period we are running the simulation for.
+    subside_val_period: np.float64
+        The total subside the center would get based on the validated values.
+        (The subside the center would get with verification)
+        It only takes into account the period we are running the simulation for.
+    taux_validation: np.float64
+        The median of the taux_validation for the center.
+        (The taux validation is 1 - (dec - val)/dec. The closer to one, the more the center tells the truth)
+    taux_validation_par_service: pd.DataFrame
+        The median of the taux_validation for each service for the center.
+        (The taux validation is 1 - (dec - val)/dec. The closer to one, the more the center tells the truth)
+    """
+
+    def __init__(self, ou_id, quantite, qualite, qualite_indicators, uneligible_vbr):
+        self.id = ou_id
+
+        if uneligible_vbr:
+            self.risk = "uneligible"
+            self.category_centre = "pca"
         else:
-            data[key] = value
-    return data
+            self.risk = "unknown"
+            self.category_centre = "pma"
 
+        self.quantite = quantite
+        self.qualite = qualite
 
-def _parse_included(included):
-    result = {}
-    for include in included:
-        result[(include["type"], include["id"])] = _flat(include)
-    return result
+        self.initialize_quantite()
+        self.initialize_qualite()
 
+        self.qualite_indicators = qualite_indicators
 
-def _flat(obj):
-    obj.pop("links", None)
-    obj.update(obj.pop("attributes", {}))
-    if "relationships" in obj:
-        for relationship, item in obj.pop("relationships").items():
-            data = item.get("data")
-            links = item.get("links")
-            if data is not None:
-                obj[relationship] = data
-            elif links:
-                obj[relationship] = item
+        self.identifier_verification = list(
+            self.quantite[
+                [
+                    "level_2_uid",
+                    "level_2_name",
+                    "level_3_uid",
+                    "level_3_name",
+                    "level_4_uid",
+                    "level_4_name",
+                    "level_5_uid",
+                    "level_5_name",
+                    "level_6_uid",
+                    "level_6_name",
+                ]
+            ].values[0]
+        )
+
+        self.period_type = ""
+        self.period = ""
+        self.month = ""
+        self.quarter = ""
+        self.nb_periods = None
+
+        self.quantite_window = pd.DataFrame()
+        self.qualite_window = pd.DataFrame()
+
+        self.nb_periods_verified = None
+        self.nb_services_risky = None
+
+        self.subside_dec_period = None
+        self.subside_val_period = None
+        self.subside_taux_period = None
+        self.diff_subsidies_tauxval_median_period = None
+        self.benefice_vbr = None
+        self.diff_subsidies_decval_median = None
+        self.diff_subsidies_decval_median_period = None
+
+    def initialize_quantite(self):
+        """
+        Initialize the quantity data.
+        """
+        self.quantite = self.quantite.sort_values(by=["ou", "service", "quarter", "month"])
+        if "level_6_uid" not in self.quantite.columns:
+            self.quantite["level_6_uid"] = pd.NA
+            self.quantite["level_6_name"] = pd.NA
+            self.qualite["level_6_uid"] = pd.NA
+            self.qualite["level_6_name"] = pd.NA
+        self.quantite["month"] = self.quantite["month"].astype(str)
+
+    def initialize_qualite(self):
+        """
+        Initialize the quality data.
+        """
+        self.qualite = self.qualite.sort_values(by=["ou", "indicator", "quarter"])
+        self.qualite = self.qualite.drop_duplicates(["ou", "indicator", "quarter"])
+        self.qualite["month"] = self.qualite["month"].astype(str)
+
+    def set_verification(self, is_verified):
+        """
+        Define whether the center will be verified or not.
+
+        Paramenters
+        ----------
+        is_verified: bool
+            True if the center will be verified, False otherwise.
+        """
+        self.is_verified = is_verified
+
+    def set_frequence(self, freq):
+        """
+        Define the period_type of the data in the Organizational Unit.
+
+        Parameters
+        ----------
+        freq : str
+            Frequency of the simulation, either "mois" or "trimestre". It is inputed by the user.
+        """
+        if freq == "trimestre":
+            self.period_type = "quarter"
+        else:
+            self.period_type = "month"
+
+    def set_window(self, window):
+        """
+        Select the quantitative and the qualitative data for the observation window.
+
+        Parameters
+        ----------
+        window : int
+            The number of months you want to use for the observation.
+        """
+        window = max([window, 3])
+        if self.period_type == "quarter":
+            range = [
+                str(elem)
+                for elem in dates.get_date_series(
+                    str(dates.months_before(self.month, window + 2)),
+                    str(dates.months_before(self.month, 3)),
+                    "month",
+                )
+            ]
+        else:
+            range = [
+                str(elem)
+                for elem in dates.get_date_series(
+                    str(dates.months_before(self.month, window)),
+                    str(dates.months_before(self.month, 1)),
+                    "month",
+                )
+            ]
+        self.quantite_window = self.quantite[self.quantite["month"].isin(range)]
+        self.qualite_window = self.qualite[self.qualite["month"].isin(range)]
+
+    def set_nb_verif_min_per_window(self, nb_periods):
+        """
+        Define the minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        """
+        self.nb_periods = nb_periods
+
+    def set_month_verification(self, period):
+        """
+        Define the date we are running the verification for.
+        """
+        self.period = str(period)
+        if self.period_type == "quarter":
+            self.quarter = str(period)
+            self.month = str(dates.quarter_to_months(period))
+        else:
+            self.month = str(period)
+            self.quarter = str(dates.month_to_quarter(period))
+
+    def get_gain_verif_for_period_verif(self, taux_validation):
+        """
+        Calculate the gains from verification.
+        For non-verified centers, we use the taux_validation to calculate the subsidies.
+
+        Parameters
+        ----------
+        taux_validation: float
+            The taux validation for the center.
+        """
+        quantite_period_total = self.quantite[self.quantite[self.period_type] == self.period].copy()
+
+        if quantite_period_total.shape[0] > 0:
+            (
+                self.subside_dec_period,
+                self.subside_val_period,
+                self.subside_taux_period,
+            ) = 0, 0, 0
+            list_services = quantite_period_total.service.unique()
+
+            for service in list_services:
+                quantite_period_service = quantite_period_total[
+                    quantite_period_total.service == service
+                ].copy()
+
+                self.calculate_mult_factor(taux_validation, quantite_period_service, service)
+
+                quantite_period_service["subside_sans_verification_method_dpdt"] = (
+                    quantite_period_service["subside_sans_verification"]
+                    * quantite_period_service["multiplication_factor"]
+                )
+
+                self.subside_dec_period += quantite_period_service[
+                    "subside_sans_verification"
+                ].sum()
+
+                self.subside_val_period += quantite_period_service[
+                    "subside_avec_verification"
+                ].sum()
+
+                self.subside_taux_period += quantite_period_service[
+                    "subside_sans_verification_method_dpdt"
+                ].sum()
+
+        else:
+            self.subside_dec_period = pd.NA
+            self.subside_taux_period = pd.NA
+            self.subside_val_period = pd.NA
+
+    def calculate_mult_factor(self, taux_validation, quantite_period_service, service):
+        """
+        For non-verified centers, calcualte the factor we will use to give subsidies.
+        """
+        if taux_validation < 1:
+            taux_validation_filtered = self.taux_validation_par_service[
+                self.taux_validation_par_service.service == service
+            ]["taux_validation"]
+
+            if taux_validation_filtered.empty:
+                quantite_period_service["multiplication_factor"] = self.taux_validation_par_service[
+                    "taux_validation"
+                ].mean()
             else:
-                obj[relationship] = None
-    return obj
+                quantite_period_service["multiplication_factor"] = taux_validation_filtered.iloc[0]
+        else:
+            quantite_period_service["multiplication_factor"] = 1
+
+    def mix_risks(self, use_quality_for_risk):
+        """
+        We have 3 risks.
+        risk_gain_median: str
+            The risk of the center based on how much we win by verifying it.
+        risk_quality: str
+            The quality risk of the center.
+        risk_quantite: str
+            The quantity risk of the center.
+
+        We combine them to get the overall risk of the center.
+
+        Parameters
+        ----------
+        use_quality_for_risk: bool
+            If True, we use the quality risk to calculate the overall risk of the center.
+        """
+        if use_quality_for_risk:
+            risks = [self.risk_gain_median, self.risk_quantite, self.risk_quality]
+        else:
+            risks = [self.risk_gain_median, self.risk_quantite]
+
+        if "uneligible" in risks:
+            self.risk = "uneligible"
+        elif "high" in risks:
+            self.risk = "high"
+        elif "moderate_1" in risks:
+            self.risk = "moderate_1"
+        elif "moderate_2" in risks:
+            self.risk = "moderate_2"
+        elif "moderate_3" in risks:
+            self.risk = "moderate_3"
+        elif "moderate" in risks:
+            self.risk = "moderate"
+        else:
+            self.risk = "low"
+
+    def define_gain_quantities(self, cout_verification_centre):
+        """
+        Define some quantities about the cost/gain of verification
+
+        Parameters
+        ----------
+        cout_verification_centre: int
+            The cost of verifying a center. It is inputed by the user.
+        """
+        self.diff_subsidies_tauxval_median_period = (
+            self.subside_taux_period - self.subside_val_period
+        )
+        self.diff_subsidies_decval_median_period = self.subside_dec_period - self.subside_val_period
+
+        if pd.isnull(self.diff_subsidies_tauxval_median_period):
+            self.benefice_vbr = pd.NA
+        else:
+            self.benefice_vbr = self.diff_subsidies_tauxval_median_period - cout_verification_centre
+
+    def get_diff_subsidies_decval_median(self):
+        """
+        Get the median of the diff_subsidies_decval_median
+        This informs about how much money is saved on subsidies with verification. It is calculated as:
+        (declared - validated) * tarif
+        """
+        self.diff_subsidies_decval_median = (
+            self.quantite_window.groupby(self.period_type, as_index=False)["gain_verif"]
+            .sum()["gain_verif"]
+            .median()
+        )
+
+    def get_ecart_median(self):
+        """
+        Get the median of the ecart, in general and per service.
+
+        The ecart is a number from 0 to 1 that represents the difference between
+            the declared, verified and validated values.
+        The closer to 0, the better the center is doing.
+        """
+        self.ecart_median_per_service = (
+            self.quantite_window.groupby("service", as_index=False)["weighted_ecart_dec_val"]
+            .median()
+            .rename(columns={"weighted_ecart_dec_val": "ecart_median"})
+        )
+        self.ecart_median = self.ecart_median_per_service["ecart_median"].median()
+
+    def get_taux_validation_median(self):
+        """
+        Get the median of the taux validation, in general and per service.
+        (The taux validation is 1 - (dec - val)/dec).
+        The closer to 1, the better the center is doing.
+
+        If there is no data, we say that none of the centers are verified.
+        """
+        self.taux_validation_par_service = self.quantite_window.groupby("service", as_index=False)[
+            "taux_validation"
+        ].median()
+
+        self.taux_validation = self.taux_validation_par_service["taux_validation"].median()
+
+        if self.taux_validation is pd.NA:
+            self.taux_validation = 0
+
+
+def hot_encode(condition):
+    """
+    Hot encode the condition
+
+    Parameters
+    ----------
+    condition: bool
+        The condition to hot encode.
+
+    Returns
+    -------
+    int
+        1 if condition is True, 0 otherwise.
+    """
+    if condition:
+        return 1
+    else:
+        return 0
 
 
 def calcul_ecarts(q):
+    """
+    Calculate the relations between the declared, verified and validated values.
+
+    Parameters
+    ----------
+    q : pd.DataFrame
+        DataFrame containing the quantitative information for the particular Organizational Unit
+
+    Returns
+    -------
+    q: pd.DataFrame
+        The same DataFrame with the new columns added.
+    """
     q["ecart_dec_ver"] = q.apply(
         lambda x: abs(x.dec - x.ver) / x.ver if x.ver != 0 else x.dec,
         axis=1,
@@ -108,740 +699,3 @@ def calcul_ecarts(q):
         axis=1,
     )
     return q
-
-
-def get_org_unit_ids(dhis, group_id):
-    org_units = set()
-    for page in dhis.api.get_paged(
-        f"organisationUnitGroups/{group_id}",
-        params={
-            "fields": "organisationUnits",
-            "pageSize": 10,
-        },
-    ):
-        org_units = org_units.union({ou_id["id"] for ou_id in page["organisationUnits"]})
-    return org_units
-
-
-def get_org_unit_ids_from_hesabu(contract_group, hesabu_package, dhis):
-    ou_groups = [
-        (g["id"], g["name"]) for g in hesabu_package["orgUnitGroups"] if g["id"] != contract_group
-    ]
-    ous = set()
-    for group_id, group_name in ou_groups:
-        ous = ous.union(get_org_unit_ids(dhis, group_id))
-    return ous
-
-
-def fetch_data_values(dhis, deg_external_reference, org_unit_ids, periods, activities, package_id):
-    for monthly_period in periods:
-        if os.path.exists(f"{workspace.files_path}/packages/{package_id}/{monthly_period}.csv"):
-            current_run.log_info(
-                f"Data for package {package_id} for {monthly_period} already fetched"
-            )
-            continue
-        chunks = {}
-        values = []
-        nb_org_unit_treated = 0
-        for i in range(1, len(org_unit_ids) + 1):
-            chunks.setdefault(i // 10, []).append(org_unit_ids[i - 1])
-        for i in chunks:
-            data_values = {}
-            param_ou = "".join([f"&orgUnit={ou}" for ou in chunks[i]])
-            url = f"dataValueSets.json?dataElementGroup={deg_external_reference}{param_ou}&period={monthly_period}"
-            res = dhis.api.get(url)
-            # data_values.exten
-            if "dataValues" in res:
-                data_values = res["dataValues"]
-            else:
-                continue
-            for org_unit_id in chunks[i]:
-                for activity in activities:
-                    current_value = {
-                        "period": monthly_period,
-                        "org_unit_id": org_unit_id,
-                        "activity_name": activity["name"],
-                        "activity_code": activity["code"],
-                    }
-                    some_values = False
-                    for code in activity.get("inputMappings").keys():
-                        input_mapping = activity.get("inputMappings").get(code)
-                        selected_values = [
-                            dv
-                            for dv in data_values
-                            if dv["orgUnit"] == org_unit_id
-                            and str(dv["period"]) == str(monthly_period)
-                            and dv["dataElement"] == input_mapping["externalReference"]
-                        ]
-                        if len(selected_values) > 0:
-                            # print(code, monthly_period, org_unit_id, len(selected_values), selected_values[0]["value"] if len(selected_values) >0 else None)
-                            try:
-                                current_value[code] = selected_values[0]["value"]
-                                some_values = True
-                            except:
-                                print(
-                                    "Error",
-                                    code,
-                                    monthly_period,
-                                    org_unit_id,
-                                    len(selected_values),
-                                    selected_values[0],
-                                )
-
-                    if some_values:
-                        values.append(current_value)
-            nb_org_unit_treated += 10
-            if nb_org_unit_treated % 100 == 0:
-                current_run.log_info(f"{nb_org_unit_treated} org units treated")
-        values_df = pd.DataFrame(values)
-        if values_df.shape[0] > 0:
-            if not os.path.exists(f"{workspace.files_path}/packages/{package_id}"):
-                os.makedirs(f"{workspace.files_path}/packages/{package_id}")
-            values_df.to_csv(
-                f"{workspace.files_path}/packages/{package_id}/{monthly_period}.csv",
-                index=False,
-            )
-            current_run.log_info(
-                f"Data ({len(values_df)}) for package {package_id} for {monthly_period} treated"
-            )
-
-
-class Group_Orgunits:
-    def __init__(self, name, qualite_indicators):
-        self.qualite_indicators = qualite_indicators
-        self.name = name
-        self.members = []
-
-    def set_cout_verification(self, cout_verification_centre):
-        self.cout_verification_centre = cout_verification_centre
-
-    def add_ou(self, ou):
-        self.members.append(ou)
-
-    def set_proportions(self, proportions):
-        self.proportions = proportions
-
-    def get_verification_list(self):
-        # Modify the number of risk categories and their proportion freely :)
-        self.verification = pd.DataFrame(
-            columns=[
-                "period",
-                "ou",
-                "level_2_uid",
-                "level_2_name",
-                "level_3_uid",
-                "level_3_name",
-                "level_4_uid",
-                "level_4_name",
-                "level_5_uid",
-                "level_5_name",
-                "level_6_uid",
-                "level_6_name",
-                "verified",
-                "gain_verif_median_precedent",
-                "gain_verif_actuel",
-                "benefice_net_verification",
-                "gain_perte_subside_taux_val",
-                "taux_validation",
-                "subside_dec_period_verif",
-                "subside_val_period_verif",
-                "subside_period_dec_taux_validation",
-                "ecart_median",
-                "categorie_risque",
-                "indicateurs_qualite_risque_eleve",
-                "indicateurs_qualite_risque_mod",
-                "indicateurs_qualite_risque_faible",
-            ]
-            + self.qualite_indicators
-        )
-        ## CUSTOM - Modify the proportion of each risk category freely :)
-
-        for ou in self.members:
-            ou.set_verification(random.uniform(0, 1) <= self.proportions[ou.risk])
-            if pd.isnull(ou.gain_verif_period_verif):
-                benefice = pd.NA
-            else:
-                benefice = ou.gain_verif_period_verif - self.cout_verification_centre
-            new_row = (
-                [ou.period]
-                + [ou.id]
-                + ou.identifier_verification
-                + [ou.is_verified]
-                + [
-                    ou.gain_median,
-                    ou.gain_verif_period_verif,
-                    benefice,
-                    ou.diff_methode_paiement,
-                    ou.taux_validation,
-                    ou.subside_dec_period_verif,
-                    ou.subside_val_period_verif,
-                    ou.subside_period_dec_taux_validation,
-                    ou.ecart_median,
-                    ou.risk,
-                    ou.quality_high_risk,
-                    ou.quality_mod_risk,
-                    ou.quality_low_risk,
-                ]
-                + [ou.indicator_scores.get(i, pd.NA) for i in self.qualite_indicators]
-            )
-            try:
-                self.verification.loc[self.verification.shape[0]] = new_row
-            except:
-                print("Catch error", len(new_row), new_row)
-        return self.verification
-
-    def get_detailled_list_dx(self):
-        df = pd.DataFrame(
-            columns=[
-                "period",
-                "ou",
-                "name",
-                "service",
-                "non_verified",
-                "taux_validation",
-                "categorie_centre",
-                "nb_mois_non_vérifiés",
-            ]
-        )
-        for ou in self.members:
-            for dx in ou.dx_list:
-                taux_validation = ou.quantite_window[ou.quantite_window.service == dx][
-                    "taux_validation"
-                ].median()
-                if pd.isnull(taux_validation):
-                    taux_validation = ou.taux_validation
-                non_verified = hot_encode(not ou.is_verified)
-                ou_uid = ou.id
-                ou_name = ou.name
-                quarter = ou.quarter
-                category = ou.category_centre
-                new_row = [
-                    quarter,
-                    ou_uid,
-                    ou_name,
-                    dx,
-                    non_verified,
-                    taux_validation,
-                    category,
-                    len(ou.nb_periods_not_verified),
-                ]
-                df.loc[df.shape[0]] = new_row
-        return df
-
-    def save_orgunits_to_csv(self, filepath: str):
-        # Get attributes from the first object
-
-        orgunits = self.members
-
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        # Write to CSV
-        res = pd.DataFrame()
-        for obj in orgunits:
-            row = {
-                attr: getattr(obj, attr)
-                for attr in dir(obj)
-                if not attr.startswith("_")
-                and not callable(getattr(obj, attr))
-                and isinstance(getattr(obj, attr), (int, float, str))
-            }
-            res = pd.concat([res, pd.DataFrame([row], index=[0])], ignore_index=True)
-        res.to_csv(filepath, index=False)
-
-        print(f"Saved {len(orgunits)} Orgunit(s) to '{filepath}'.")
-
-    def get_statistics(self, period):
-        stats = pd.DataFrame(
-            columns=[
-                "province",
-                "periode",
-                "#centres",
-                "#risque élevé",
-                "#risque modéré",
-                "#risque faible",
-                "# vérifiés",
-                "cout vérif (VBR)",
-                "cout vérif (syst)",
-                "subsides santé (VBR)",
-                "subsides santé (syst)",
-                "cout total (VBR)",
-                "cout total (syst)",
-                "cout verif sur cout total (VBR)",
-                "cout verif sur cout total (syst)",
-                "#centres lese par taux validation",
-                "#centres favorise par taux validation",
-                "Total subsides sous évalués",
-                "Total subsides sur-évalués",
-                "perte médiane pour centres non-vérifiés",
-                "gain médian pour centres vérifiés",
-                "#_scores_qualite_risqués (centres vérifiés)",
-                "#_scores_qualite_risqués (centres non-vérifiés)",
-                "#_scores_qualite_non-risqués (centres vérifiés)",
-                "#_scores_qualite_non-risqués (centres non-vérifiés)",
-            ]
-        )
-        self.nb_centers = len(self.members)
-        self.nb_centers_verified = self.verification[self.verification.verified == True].shape[0]
-        self.high = len(
-            [ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"]
-        )
-        ## CUSTOM - Modify the assignation based on levels of risks :)
-        self.mod = len([ou.id for ou in self.members if "moderate" in ou.risk])
-        self.low = len([ou.id for ou in self.members if ou.risk == "low"])
-        self.cost_verification_vbr = self.cout_verification_centre * self.nb_centers_verified
-        self.cost_verification_syst = self.cout_verification_centre * self.nb_centers
-        self.benefice_net_unverified = self.verification[self.verification.verified == False][
-            "benefice_net_verification"
-        ].mean()
-        self.benefice_net_verified = self.verification[self.verification.verified == True][
-            "benefice_net_verification"
-        ].mean()
-        self.nb_centre_leses_method_paym = len(
-            self.verification[
-                (self.verification.verified == False)
-                & (self.verification["gain_perte_subside_taux_val"] < 0)
-            ]["ou"].unique()
-        )
-        self.nb_centre_favorises_method_paym = len(
-            self.verification[
-                (self.verification.verified == False)
-                & (self.verification["gain_perte_subside_taux_val"] > 0)
-            ]["ou"].unique()
-        )
-        self.subs_total_leses_method_paym = self.verification[
-            (self.verification.verified == False)
-            & (self.verification["gain_perte_subside_taux_val"] < 0)
-        ]["gain_perte_subside_taux_val"].sum()
-        self.subs_total_favorises_method_paym = self.verification[
-            (self.verification.verified == False)
-            & (self.verification["gain_perte_subside_taux_val"] > 0)
-        ]["gain_perte_subside_taux_val"].sum()
-        self.qualite_indicator_risque_eleve_unverified = (
-            self.verification[self.verification.verified == False][
-                "indicateurs_qualite_risque_eleve"
-            ]
-            .map(lambda x: len(x.split("--")))
-            .mean()
-        )
-        self.qualite_indicator_risque_eleve_verified = (
-            self.verification[self.verification.verified == True][
-                "indicateurs_qualite_risque_eleve"
-            ]
-            .map(lambda x: len(x.split("--")))
-            .mean()
-        )
-        self.qualite_indicator_risque_faible_unverified = (
-            self.verification[self.verification.verified == False][
-                "indicateurs_qualite_risque_faible"
-            ]
-            .map(lambda x: len(x.split("--")))
-            .mean()
-        )
-        self.qualite_indicator_risque_faible_verified = (
-            self.verification[self.verification.verified == True][
-                "indicateurs_qualite_risque_faible"
-            ]
-            .map(lambda x: len(x.split("--")))
-            .mean()
-        )
-        self.subsides_vbr = (
-            self.verification[self.verification.verified == True]["subside_val_period_verif"].sum()
-            + self.verification[self.verification.verified == False][
-                "subside_period_dec_taux_validation"
-            ].sum()
-        )
-        self.subsides_syst = self.verification["subside_val_period_verif"].sum()
-        self.cout_total_vbr = self.subsides_vbr + self.cost_verification_vbr
-        self.cout_total_syst = self.subsides_syst + self.cost_verification_syst
-        self.ratio_vbr = self.cost_verification_vbr / self.cout_total_vbr
-        self.ratio_syst = self.cost_verification_syst / self.cout_total_syst
-        new_row = [
-            self.name,
-            period,
-            self.nb_centers,
-            self.high,
-            self.mod,
-            self.low,
-            self.nb_centers_verified,
-            self.cost_verification_vbr,
-            self.cost_verification_syst,
-            self.subsides_vbr,
-            self.subsides_syst,
-            self.cout_total_vbr,
-            self.cout_total_syst,
-            self.ratio_vbr,
-            self.ratio_syst,
-            self.nb_centre_leses_method_paym,
-            self.nb_centre_favorises_method_paym,
-            self.subs_total_leses_method_paym,
-            self.subs_total_favorises_method_paym,
-            (-1) * self.benefice_net_unverified,
-            self.benefice_net_verified,
-            self.qualite_indicator_risque_eleve_verified,
-            self.qualite_indicator_risque_eleve_unverified,
-            self.qualite_indicator_risque_faible_verified,
-            self.qualite_indicator_risque_faible_unverified,
-        ]
-        try:
-            stats.loc[0] = new_row
-        except:
-            print("catch error", len(new_row), new_row)
-
-        return stats
-
-
-class Orgunit:
-    def __init__(self, ou_id, quantite, qualite, qualite_indicators, uneligible_vbr):
-        self.qualite_indicators = qualite_indicators
-        if "level_6_uid" not in quantite.columns:
-            quantite["level_6_uid"] = pd.NA
-            quantite["level_6_name"] = pd.NA
-            qualite["level_6_uid"] = pd.NA
-            qualite["level_6_name"] = pd.NA
-
-        self.start = quantite.month.min()
-        if uneligible_vbr:
-            self.risk = "uneligible"
-            self.category_centre = "pca"
-        else:
-            self.risk = "unknown"
-            self.category_centre = "pma"
-        self.end = quantite.month.max()
-        self.dx_list = list(quantite.service.unique())
-        self.quantite = quantite.sort_values(by=["ou", "service", "quarter", "month"])
-        self.qualite = qualite.sort_values(by=["ou", "indicator", "quarter"]).drop_duplicates(
-            ["ou", "indicator", "quarter"]
-        )
-        self.quantite["month"] = self.quantite["month"].astype(str)
-        self.qualite["month"] = self.qualite["month"].astype(str)
-        self.id = ou_id
-        self.level = self.quantite.level.unique()[0]
-        self.name = self.quantite[f"level_{self.level}_uid"].unique()[0]
-        self.identifier_verification = list(
-            self.quantite[
-                [
-                    "level_2_uid",
-                    "level_2_name",
-                    "level_3_uid",
-                    "level_3_name",
-                    "level_4_uid",
-                    "level_4_name",
-                    "level_5_uid",
-                    "level_5_name",
-                    "level_6_uid",
-                    "level_6_name",
-                ]
-            ].values[0]
-        )
-
-    def set_verification(self, is_verified):
-        self.is_verified = is_verified
-
-    def set_frequence(self, freq):
-        if freq == "trimestre":
-            self.period_type = "quarter"
-        else:
-            self.period_type = "month"
-
-    def set_month_verification(self, period):
-        self.period = str(period)
-        if self.period_type == "quarter":
-            self.quarter = period
-            self.month = str(quarter_to_months(period))
-        else:
-            self.month = period
-            self.quarter = str(month_to_quarter(period))
-
-    def set_window(self, window):
-        self.window = max([window, 3])
-        if self.period_type == "quarter":
-            self.range = [
-                str(elem)
-                for elem in get_date_series(
-                    str(months_before(self.month, self.window + 2)),
-                    str(months_before(self.month, 3)),
-                    "month",
-                )
-            ]
-        else:
-            self.range = [
-                str(elem)
-                for elem in get_date_series(
-                    str(months_before(self.month, self.window)),
-                    str(months_before(self.month, 1)),
-                    "month",
-                )
-            ]
-        self.quantite_window = self.quantite[self.quantite["month"].isin(self.range)]
-        self.qualite_window = self.qualite[self.qualite["month"].isin(self.range)]
-
-    def set_nb_verif_min_per_window(self, nb_periods):
-        self.nb_periods = nb_periods
-
-    def get_gain_verif_for_period_verif(self, taux_validation):
-        quantite_period_verif_total = self.quantite[
-            self.quantite[self.period_type] == self.period
-        ].copy()
-        if quantite_period_verif_total.shape[0] > 0:
-            (
-                self.subside_dec_period_verif,
-                self.subside_val_period_verif,
-                self.subside_period_dec_taux_validation,
-                self.gain_verif_period_verif,
-                self.diff_methode_paiement,
-            ) = 0, 0, 0, 0, 0
-            for dx in quantite_period_verif_total.service.unique():
-                quantite_period_verif = quantite_period_verif_total[
-                    quantite_period_verif_total.service == dx
-                ].copy()
-                if len(quantite_period_verif) > 0:
-                    self.subside_dec_period_verif += quantite_period_verif[
-                        "subside_sans_verification"
-                    ].sum()
-                    self.subside_val_period_verif += quantite_period_verif[
-                        "subside_avec_verification"
-                    ].sum()
-                    if taux_validation < 1:
-                        quantite_period_verif["subside_sans_verification_method_dpdt"] = (
-                            quantite_period_verif.apply(
-                                lambda x: x["subside_sans_verification"]
-                                * list(
-                                    self.taux_validation_par_service[
-                                        self.taux_validation_par_service.service == dx
-                                    ]["taux_validation"].values
-                                )[0]
-                                if len(
-                                    self.taux_validation_par_service[
-                                        self.taux_validation_par_service.service == dx
-                                    ]
-                                )
-                                > 0
-                                else x.subside_sans_verification
-                                * self.taux_validation_par_service["taux_validation"].mean(),
-                                axis=1,
-                            )
-                        )
-                    else:
-                        quantite_period_verif["subside_sans_verification_method_dpdt"] = (
-                            quantite_period_verif["subside_sans_verification"]
-                        )
-                    quantite_period_verif["gain_verif_method_dpdt"] = (
-                        quantite_period_verif["subside_sans_verification_method_dpdt"]
-                        - quantite_period_verif["subside_avec_verification"]
-                    )
-
-                    self.subside_period_dec_taux_validation += quantite_period_verif[
-                        "subside_sans_verification_method_dpdt"
-                    ].sum()
-                    self.diff_methode_paiement = (
-                        self.subside_period_dec_taux_validation - self.subside_val_period_verif
-                    )
-                    self.gain_verif_period_verif += quantite_period_verif[
-                        "gain_verif_method_dpdt"
-                    ].sum()
-                else:
-                    self.diff_methode_paiement += 0
-                    self.subside_period_dec_taux_validation += self.subside_dec_period_verif
-                    self.gain_verif_period_verif += quantite_period_verif["gain_verif"].sum()
-
-        else:
-            self.gain_verif_period_verif = pd.NA
-            self.subside_dec_period_verif = pd.NA
-            self.subside_period_dec_taux_validation = pd.NA
-            self.subside_val_period_verif = pd.NA
-            self.diff_methode_paiement = pd.NA
-
-    def mix_risks(self, use_quality_for_risk):
-        if use_quality_for_risk:
-            risks = [self.risk_gain_median, self.risk_quantite, self.risk_quality]
-        else:
-            risks = [self.risk_gain_median, self.risk_quantite]
-        if "uneligible" in risks:
-            self.risk = "uneligible"
-        elif "high" in risks:
-            self.risk = "high"
-        elif "moderate_1" in risks:
-            self.risk = "moderate_1"
-        elif "moderate_2" in risks:
-            self.risk = "moderate_2"
-        elif "moderate_3" in risks:
-            self.risk = "moderate_3"
-        elif "moderate" in risks:
-            self.risk = "moderate"
-        else:
-            self.risk = "low"
-
-    def get_ecart_median_per_service(self):
-        self.ecart_median_per_service = (
-            self.quantite_window.groupby("service", as_index=False)["weighted_ecart_dec_val"]
-            .median()
-            .rename(columns={"weighted_ecart_dec_val": "ecart_median"})
-        )
-        self.gain_median = (
-            self.quantite_window.groupby(self.period_type, as_index=False)["gain_verif"]
-            .sum()["gain_verif"]
-            .median()
-        )
-
-    def get_ecart_median(self):
-        self.ecart_median = (
-            self.quantite_window.groupby("service", as_index=False)["weighted_ecart_dec_val"]
-            .median()["weighted_ecart_dec_val"]
-            .median()
-        )
-
-    def get_taux_validation_median(self):
-        self.taux_validation = (
-            self.quantite_window.groupby("service", as_index=False)["taux_validation"]
-            .median()["taux_validation"]
-            .median()
-        )
-        self.taux_validation_par_service = self.quantite_window.groupby("service", as_index=False)[
-            "taux_validation"
-        ].median()
-
-    def get_gain_median_par_periode(self):
-        self.gain_median = (
-            self.quantite_window.groupby(self.period_type, as_index=False)["gain_verif"]
-            .sum()["gain_verif"]
-            .median()
-        )
-
-
-def add_parents(df, parents):
-    filtered_parents = {key: parents[key] for key in df["ou"] if key in parents}
-    # Transform the `parents` dictionary into a DataFrame
-    parents_df = pd.DataFrame.from_dict(filtered_parents, orient="index").reset_index()
-
-    # Rename the index column to match the "ou" column
-    parents_df.rename(
-        columns={
-            "index": "ou",
-            "level_2_id": "level_2_uid",
-            "level_3_id": "level_3_uid",
-            "level_4_id": "level_4_uid",
-            "level_5_id": "level_5_uid",
-            "name": "level_5_name",
-        },
-        inplace=True,
-    )
-
-    # Join the DataFrame with the parents DataFrame on the "ou" column
-    result_df = df.merge(parents_df, on="ou", how="left")
-    return result_df
-
-
-def hot_encode(condition):
-    if condition:
-        return 1
-    else:
-        return 0
-
-
-def month_to_quarter(num):
-    """
-    Input:
-    num (int) : a given month (e.g. 201808 )
-    Returns: (str) the quarter corresponding to the given month (e.g. 2018Q3)
-    """
-    num = int(num)
-    y = num // 100
-    m = num % 100
-    return str(y) + "Q" + str((m - 1) // 3 + 1)
-
-
-def quarter_to_months(name):
-    """
-    Input:
-    name (str) : a given quarter (e.g. 2018Q3)
-    Returns: (int) the third month of the quarter (e.g. 201809)
-    """
-    year, quarter = str(name).split("Q")
-    return int(year) * 100 + int(quarter) * 3
-
-
-def months_before(date, lag):
-    """
-    Input:
-    - date (int) : a given month (e.g. 201804)
-    - lag (int) : number of months before (e.g. 6)
-
-    Returns: a month (int) corresponding to the period that is "lag" months before "date"
-    e.g. : 201710
-    """
-    date = int(date)
-    year = date // 100
-    m = date % 100
-    lag_years = lag // 12
-    year -= lag_years
-    lag = lag - 12 * lag_years
-    diff = m - lag
-    if diff > 0:
-        return year * 100 + m - lag
-    else:
-        year -= 1
-        m = 12 + diff
-        return year * 100 + m
-
-
-def get_month(mois, year):
-    return year * 100 + mois
-
-
-def add_higher_levels_and_names(dhis, data):
-    lou = {ou["id"]: ou for ou in dhis.meta.organisation_units()}
-    res = [
-        {
-            "dx": row.dx,
-            "dx_name": row.dx_name,
-            "period": int(row.pe),
-            "level_5_uid": row["ou"],
-            "level_5_name": lou[row["ou"]].get("name"),
-            "level_4_uid": lou[row["ou"]]["path"].strip("/").split("/")[3],
-            "level_4_name": lou[lou[row["ou"]]["path"].strip("/").split("/")[3]].get("name"),
-            "level_3_uid": lou[row["ou"]]["path"].strip("/").split("/")[2],
-            "level_3_name": lou[lou[row["ou"]]["path"].strip("/").split("/")[2]].get("name"),
-            "level_2_uid": lou[row["ou"]]["path"].strip("/").split("/")[1],
-            "level_2_name": lou[lou[row["ou"]]["path"].strip("/").split("/")[1]].get("name"),
-            "value": int(float(row.value)),
-        }
-        for i, row in data.iterrows()
-        if not row.isnull().any()
-    ]
-    return pd.DataFrame(res)
-
-
-def period_to_quarter(p):
-    p = int(p)
-    year = p // 100
-    quarter = ((p % 100) - 1) // 3 + 1
-    return f"{year}Q{quarter}"
-
-
-def get_date_series(start, end, type):
-    from openhexa.toolbox.dhis2.periods import Month, Quarter
-
-    """
-    Input:
-    - start (int) : a given starting month (e.g. 201811)
-    - end (int) : a given ending month (e.g. 201811)
-
-    Returns: a list of consecutive months (int) starting with "start" and ending
-    with "end"
-    """
-    if type == "quarter":
-        q1 = Quarter(start)
-        q2 = Quarter(end)
-        range = q1.get_range(q2)
-    else:
-        m1 = Month(start)
-        m2 = Month(end)
-        range = m1.get_range(m2)
-    return range
-
-
-def last_quarter(year, quarter):
-    if quarter == 1:
-        return year - 1, 4
-    else:
-        return year, quarter - 1
