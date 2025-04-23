@@ -1,8 +1,7 @@
 import pandas as pd
 
-import dates
-
-import config_package as config
+from RBV_package import dates
+from RBV_package import config_package as config
 
 
 class GroupOrgUnits:
