@@ -1,25 +1,17 @@
 """Template for newly generated pipelines."""
 
-from openhexa.sdk import current_run, pipeline, workspace, parameter, DHIS2Connection
-import pickle
-import requests
-import os
 import json
+import os
+import pickle
 import sys
 
 import pandas as pd
-
+import requests
+from openhexa.sdk import DHIS2Connection, current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
 
-rbv_path = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "rbv-package", "RBV_package")
-)
-sys.path.append(rbv_path)
-import rbv_environment as rbv
-import dates
-import data_extraction
-
-from RBV_package import rbv_environment
+from RBV_package import data_extraction, dates
+from RBV_package import rbv_environment as rbv
 
 
 @pipeline("initialize_vbr")
@@ -66,13 +58,11 @@ def initialize_vbr(
     window,
     selection_provinces,
 ):
-    """
-    Pipeline to extract the necessary data.
+    """Pipeline to extract the necessary data.
 
     We use Hesabu and DHIS2 to obtain information about different health centers.
     We obtain both quantity and quality data, and we store them in the files quantity_data.csv and quality_data.csv.
     """
-
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
     hesabu_params = get_hesabu_vbr_setup()
@@ -89,8 +79,7 @@ def initialize_vbr(
 
 @initialize_vbr.task
 def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract):
-    """
-    Create a CSV file with the quantity data.
+    """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
     (3) We select the columns that we are interested in.
@@ -98,7 +87,7 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
     (5) We save the data in a CSV file.
 
     Parameters
-    ------
+    ----------
     done: bool
         Indicates that the process get_package_values has finished.
     periods: list
@@ -162,15 +151,14 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
 
 @initialize_vbr.task
 def prepare_quality_data(done, periods, packages, hesabu_params, extract):
-    """
-    Create a CSV file with the quality data.
+    """Create a CSV file with the quality data.
     (1) We combine all of the data from the packages cvs's that have quality data.
     (2) We select the columns that we are interested in.
     (3) We perform some calculations on the data, to have all of the information we will need.
     (4) We save the data in a CSV file.
 
     Parameters
-    ------
+    ----------
     done: bool
         Indicates that the process get_package_values has finished.
     periods: list
@@ -212,11 +200,10 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract):
 
 @initialize_vbr.task
 def save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces):
-    """
-    We save the simulation in a pickle file. We will then access this pickle file in the second pipeline.
+    """We save the simulation in a pickle file. We will then access this pickle file in the second pipeline.
 
     Parameters
-    ------
+    ----------
     quant: pd.DataFrame
         The quantity data.
     qual: pd.DataFrame
@@ -305,11 +292,10 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
 
 @initialize_vbr.task
 def get_dhis2(con_oh):
-    """
-    Start the connection to the DHIS2 instance.
+    """Start the connection to the DHIS2 instance.
 
     Parameters
-    ------
+    ----------
     con_OH:
         Connection to the DHIS2 instance.
 
@@ -323,24 +309,22 @@ def get_dhis2(con_oh):
 
 @initialize_vbr.task
 def get_hesabu_vbr_setup():
-    """
-    Open the JSON file with the Hesabu setup.
+    """Open the JSON file with the Hesabu setup.
 
     Returns
     -------
     Dict:
         Contains the information we want to extract from Hesabu.
     """
-    return json.load(open(f"{workspace.files_path}/hesabu/hesabu_vbr_setup.json", "r"))
+    return json.load(open(f"{workspace.files_path}/hesabu/hesabu_vbr_setup.json"))
 
 
 @initialize_vbr.task
 def get_hesabu_package_ids(hesabu_setup):
-    """
-    Get the package IDs from the Hesabu setup.
+    """Get the package IDs from the Hesabu setup.
 
     Parameters
-    ------
+    ----------
     hesabu_setup: dict
         The Hesabu setup.
 
@@ -354,11 +338,10 @@ def get_hesabu_package_ids(hesabu_setup):
 
 @initialize_vbr.task
 def get_contract_group_unit_id(hesa_setup):
-    """
-    Get the contract ID from the Hesabu setup.
+    """Get the contract ID from the Hesabu setup.
 
     Parameters
-    ------
+    ----------
     hesabu_setup: dict
         The Hesabu setup.
 
@@ -372,11 +355,10 @@ def get_contract_group_unit_id(hesa_setup):
 
 @initialize_vbr.task
 def get_hesabu(con_hesabu):
-    """
-    Start the connection to the Hesabu instance.
+    """Start the connection to the Hesabu instance.
 
     Parameters
-    ------
+    ----------
     con_hesabu:
         Connection to the Hesabu instance.
 
@@ -390,13 +372,12 @@ def get_hesabu(con_hesabu):
 
 @initialize_vbr.task
 def fetch_hesabu_package(con_hesabu, package_ids):
-    """
-    Using the Hesabu connection, get the codes for the information that we need from each of the packages.
+    """Using the Hesabu connection, get the codes for the information that we need from each of the packages.
     You have a list of package IDs. They correspond to the different informations that we are going to want to extract from DHIS2.
     These packages contain different informations. We go into the Hesabu page to get the codes/names/etc of those informations.
 
     Parameters
-    ------
+    ----------
     con_hesabu:
         Connection to the Hesabu instance.
     package_ids: list
@@ -454,15 +435,14 @@ def fetch_hesabu_package(con_hesabu, package_ids):
 
 @initialize_vbr.task
 def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
-    """
-    Create a CSV file for each of the packages and each of the periods.
+    """Create a CSV file for each of the packages and each of the periods.
     Each of the packages contains a kind of information (for example, the xxxx).
     In order to fill the CVSs files, we use the codes/names/etc that we extracted from Hesabu.
     Then, we go to DHIS2 and get the data for each of those codes/names/etc.
     We create a CSV file for each of the packages and each of the periods.
 
     Parameters
-    ------
+    ----------
     dhis:
         Connection to the DHIS2 instance.
     periods: list
@@ -518,11 +498,10 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
 
 @initialize_vbr.task
 def fetch_contracts(dhis, contract_program_id):
-    """
-    Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
+    """Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
 
     Parameters
-    ------
+    ----------
     dhis:
         Connection to the DHIS2 instance.
     contract_program_id: str
@@ -578,11 +557,10 @@ def fetch_contracts(dhis, contract_program_id):
 
 @initialize_vbr.task
 def get_periods(period, window):
-    """
-    Get the periods.
+    """Get the periods.
 
     Parameters
-    ------
+    ----------
     period: str
         The end of the period to be considered. Is inputed by the user.
     window: int
@@ -600,11 +578,10 @@ def get_periods(period, window):
 
 
 def get_period_type(period):
-    """
-    Decide if the period is a month or a quarter.
+    """Decide if the period is a month or a quarter.
 
     Parameters
-    ------
+    ----------
     period: str
         The end of the period to be considered. Is inputed by the user.
 
@@ -615,16 +592,14 @@ def get_period_type(period):
     """
     if "Q" in period:
         return "quarter"
-    else:
-        return "month"
+    return "month"
 
 
 def get_start_end(period, window, frequency):
-    """
-    Get the periods.
+    """Get the periods.
 
     Parameters
-    ------
+    ----------
     period: str
         The end of the period to be considered. Is inputed by the user.
     window: int

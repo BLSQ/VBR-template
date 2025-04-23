@@ -17,12 +17,8 @@ import sys
 import warnings
 import random
 
-rbv_path = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "rbv-package", "RBV_package")
-)
-sys.path.append(rbv_path)
-import dates
-import config_package as config
+from RBV_package import dates
+from RBV_package import config_package as config
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
