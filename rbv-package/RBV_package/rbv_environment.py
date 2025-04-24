@@ -197,6 +197,8 @@ class GroupOrgUnits:
             "diff_in_subsidies_tauxval_period"
         ].mean()
 
+        total_gain_vbr = cout_total_syst - cout_total_vbr
+
         new_row = (
             self.name,
             period,
@@ -219,6 +221,7 @@ class GroupOrgUnits:
             money_lost_by_vbr,
             gain_unverified_centers_for_vbr,
             gain_verified_centers_for_vbr,
+            total_gain_vbr,
         )
 
         return new_row
@@ -642,7 +645,7 @@ class Orgunit:
 
         self.taux_validation = self.taux_validation_par_service["taux_validation"].median()
 
-        if self.taux_validation is pd.NA:
+        if pd.isna(self.taux_validation):
             self.taux_validation = 0
 
 
