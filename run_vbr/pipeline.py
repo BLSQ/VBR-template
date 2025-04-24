@@ -28,7 +28,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
-    default="period_202406",
+    default="modified_package",
     type=str,
     required=True,
 )
