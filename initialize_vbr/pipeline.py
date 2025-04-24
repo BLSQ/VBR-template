@@ -38,7 +38,7 @@ from RBV_package import rbv_environment as rbv
     required=True,
     default="202406",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model_now", required=True)
+@parameter("model_name", name="Name of the model", type=str, default="period_202412", required=True)
 @parameter(
     "window",
     type=int,
