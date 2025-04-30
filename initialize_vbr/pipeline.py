@@ -3,7 +3,6 @@
 import json
 import os
 import pickle
-import sys
 
 import pandas as pd
 import requests
@@ -110,11 +109,15 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data = pd.DataFrame()
         for id in packages:
             if hesabu_params["packages"][str(id)] == "quantite" and os.path.exists(
-                f"{workspace.files_path}/packages/{id}"
+                f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
             ):
                 for p in periods:
-                    if os.path.exists(f"{workspace.files_path}/packages/{id}/{p}.csv"):
-                        df = pd.read_csv(f"{workspace.files_path}/packages/{id}/{p}.csv")
+                    if os.path.exists(
+                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
+                    ):
+                        df = pd.read_csv(
+                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
+                        )
                         data = pd.concat([data, df], ignore_index=True)
                         # data contains the actual data for the package identified with id.
                         # It has the data for all of the periods.
@@ -143,9 +146,11 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data["subside_avec_verification"] = data["val"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
-        data.to_csv(f"{workspace.files_path}/quantity_data.csv", index=False)
+        data.to_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data.csv", index=False
+        )
     else:
-        data = pd.read_csv(f"{workspace.files_path}/quantity_data.csv")
+        data = pd.read_csv(f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data.csv")
     return data
 
 
@@ -179,11 +184,15 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract):
         data = pd.DataFrame()
         for id in packages:
             if hesabu_params["packages"][str(id)] == "qualite" and os.path.exists(
-                f"{workspace.files_path}/packages/{id}"
+                f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
             ):
                 for p in [dates.month_to_quarter(str(p)) for p in periods]:
-                    if os.path.exists(f"{workspace.files_path}/packages/{id}/{p}.csv"):
-                        df = pd.read_csv(f"{workspace.files_path}/packages/{id}/{p}.csv")
+                    if os.path.exists(
+                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
+                    ):
+                        df = pd.read_csv(
+                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
+                        )
                         data = pd.concat([data, df], ignore_index=True)
         data = data[list(hesabu_params["qualite_attributes"].keys())]
         data.rename(
@@ -192,9 +201,11 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract):
         )
         data["score"] = data["num"] / data["denom"]
         data["month"] = data["quarter"].map(dates.quarter_to_months)
-        data.to_csv(f"{workspace.files_path}/quality_data.csv", index=False)
+        data.to_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data.csv", index=False
+        )
     else:
-        data = pd.read_csv(f"{workspace.files_path}/quality_data.csv")
+        data = pd.read_csv(f"{workspace.files_path}/pipelines/initialize_vbr/quality_data.csv")
     return data
 
 
@@ -277,15 +288,18 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
         print(f"number of orgunits= {nb_tot}")
         regions.append(group_of_ou)
 
-    if not os.path.exists(f"{workspace.files_path}/initialization_simulation"):
-        os.makedirs(f"{workspace.files_path}/initialization_simulation")
+    if not os.path.exists(
+        f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation"
+    ):
+        os.makedirs(f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation")
     with open(
-        f"{workspace.files_path}/initialization_simulation/{model_name}.pickle", "wb"
+        f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle",
+        "wb",
     ) as file:
         # Serialize and save the object to the file
         pickle.dump(regions, file)
     print(
-        f"Fichier d'initialisation sauvé: {workspace.files_path}/initialization_simulation/{model_name}.pickle"
+        f"Fichier d'initialisation sauvé: {workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle"
     )
     return regions
 
@@ -316,7 +330,9 @@ def get_hesabu_vbr_setup():
     Dict:
         Contains the information we want to extract from Hesabu.
     """
-    return json.load(open(f"{workspace.files_path}/hesabu/hesabu_vbr_setup.json"))
+    return json.load(
+        open(f"{workspace.files_path}/pipelines/initialize_vbr/hesabu/hesabu_vbr_setup.json")
+    )
 
 
 @initialize_vbr.task
@@ -488,6 +504,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                     periods_adapted,
                     package["activities"],
                     package_id,
+                    f"{workspace.files_path}/pipelines/initialize_vbr/packages",
                 )
                 # Here, we input the DHIS2 connection, the degree of external reference, the list of IDs of the organization units,
                 # the periods we are interested in, the activities we are interested in and the package ID.
@@ -551,7 +568,7 @@ def fetch_contracts(dhis, contract_program_id):
         records.append(record)
 
     records_df = pd.DataFrame(records)
-    records_df.to_csv(f"{workspace.files_path}/contracts.csv", index=False)
+    records_df.to_csv(f"{workspace.files_path}/pipelines/initialize_vbr/contracts.csv", index=False)
     return records_df
 
 

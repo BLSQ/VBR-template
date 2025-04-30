@@ -132,7 +132,9 @@ def get_org_unit_ids_from_hesabu(contract_group, hesabu_package, dhis):
     return ous
 
 
-def fetch_data_values(dhis, deg_external_reference, org_unit_ids, periods, activities, package_id):
+def fetch_data_values(
+    dhis, deg_external_reference, org_unit_ids, periods, activities, package_id, path
+):
     """
     Get the datavalues from DHIS2
 
@@ -150,9 +152,11 @@ def fetch_data_values(dhis, deg_external_reference, org_unit_ids, periods, activ
         The activities we are interested in.
     package_id: str
         The ID of the package we are interested in.
+    path: str
+        The path where the packages are stored.
     """
     for monthly_period in periods:
-        if os.path.exists(f"{workspace.files_path}/packages/{package_id}/{monthly_period}.csv"):
+        if os.path.exists(f"{path}/{package_id}/{monthly_period}.csv"):
             current_run.log_info(
                 f"Data for package {package_id} for {monthly_period} already fetched"
             )
@@ -212,10 +216,10 @@ def fetch_data_values(dhis, deg_external_reference, org_unit_ids, periods, activ
                 current_run.log_info(f"{nb_org_unit_treated} org units treated")
         values_df = pd.DataFrame(values)
         if values_df.shape[0] > 0:
-            if not os.path.exists(f"{workspace.files_path}/packages/{package_id}"):
-                os.makedirs(f"{workspace.files_path}/packages/{package_id}")
+            if not os.path.exists(f"{path}/{package_id}"):
+                os.makedirs(f"{path}/{package_id}")
             values_df.to_csv(
-                f"{workspace.files_path}/packages/{package_id}/{monthly_period}.csv",
+                f"{path}/{package_id}/{monthly_period}.csv",
                 index=False,
             )
             current_run.log_info(

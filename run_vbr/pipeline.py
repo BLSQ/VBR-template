@@ -13,7 +13,6 @@ from vbr_custom import (
     get_proportions,
     assign_taux_validation_per_zs,
 )
-import sys
 import warnings
 import random
 
@@ -233,14 +232,19 @@ def create_folders(folder):
         }
     }
 
-    os.makedirs(os.path.join(workspace.files_path, folder), exist_ok=True)
+    os.makedirs(os.path.join(workspace.files_path, "pipelines/run_vbr", folder), exist_ok=True)
 
     for subdir in dict_paths[folder]:
-        os.makedirs(os.path.join(workspace.files_path, folder, subdir), exist_ok=True)
+        os.makedirs(
+            os.path.join(workspace.files_path, "pipelines/run_vbr", folder, subdir), exist_ok=True
+        )
         for subdir2 in dict_paths[folder][subdir]:
-            os.makedirs(os.path.join(workspace.files_path, folder, subdir, subdir2), exist_ok=True)
+            os.makedirs(
+                os.path.join(workspace.files_path, "pipelines/run_vbr", folder, subdir, subdir2),
+                exist_ok=True,
+            )
 
-    path_data = os.path.join(workspace.files_path, folder, subdir)
+    path_data = os.path.join(workspace.files_path, "pipelines/run_vbr", folder, subdir)
 
     return path_data
 
@@ -442,7 +446,7 @@ def get_environment(nom_init):
         (each of the OrgUnits objects contains the data for a particular Organizational Unit).
     """
     current_run.log_info("Chargement des données d'initialisation de la simulation")
-    data_path = f"{workspace.files_path}/"
+    data_path = f"{workspace.files_path}/pipelines/initialize_vbr/"
     with open(f"{data_path}initialization_simulation/{nom_init}.pickle", "rb") as file:
         # Deserialize and load the object from the file
         regions = pickle.load(file)
