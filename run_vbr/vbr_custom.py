@@ -1,6 +1,6 @@
 import pandas as pd
 from openhexa.sdk import current_run
-from RBV_package import rbv_environment
+from RBV_package import dates
 
 
 def get_proportions(p_low, p_mod, p_high):
@@ -72,7 +72,7 @@ def visited_since(center, months_since_last_visit):
     """
     verified_last_period = center.quantite_window[~pd.isnull(center.quantite_window.val)][
         "month"
-    ].max() >= str(rbv_environment.months_before(center.month, months_since_last_visit))
+    ].max() >= str(dates.months_before(center.month, months_since_last_visit))
     return verified_last_period
 
 
