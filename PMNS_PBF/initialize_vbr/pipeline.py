@@ -3,6 +3,8 @@
 import json
 import os
 import pickle
+import warnings
+from pandas.errors import SettingWithCopyWarning
 
 import pandas as pd
 import requests
@@ -11,6 +13,8 @@ from openhexa.toolbox.dhis2 import DHIS2
 
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
+
+warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
 
 @pipeline("buu-init-vbr", name="BUU_init_VBR")
@@ -37,7 +41,9 @@ from RBV_package import rbv_environment as rbv
     required=True,
     default="202406",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model_now", required=True)
+@parameter(
+    "model_name", name="Name of the model", type=str, default="part_data_1247", required=True
+)
 @parameter(
     "window",
     type=int,
