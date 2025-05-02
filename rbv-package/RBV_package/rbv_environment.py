@@ -2,8 +2,7 @@ import pandas as pd
 
 from RBV_package import dates
 
-# from RBV_package import config_package as config
-import config_package as config
+from RBV_package import config_package as config
 
 
 class GroupOrgUnits:
