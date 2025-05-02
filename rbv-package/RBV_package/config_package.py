@@ -47,12 +47,12 @@ list_cols_df_stats = [
     "Amount of over-subsidies",
     "Average of over-subsidies (non-verified centers)",
     "Average of over-subsidies (verified centers)",
-    "Average number of high risk quality indicators (verified centers)",
     "Average number of high risk quality indicators (non-verified centers)",
-    "Average number of middle risk quality indicators (verified centers)",
+    "Average number of high risk quality indicators (verified centers)",
     "Average number of middle risk quality indicators (non-verified centers)",
-    "Average number of low risk quality indicators (verified centers)",
+    "Average number of middle risk quality indicators (verified centers)",
     "Average number of low risk quality indicators (non-verified centers)",
+    "Average number of low risk quality indicators (verified centers)",
 ]
 list_cols_df_services = [
     "period",
