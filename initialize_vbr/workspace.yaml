@@ -2,12 +2,12 @@ connections:
   pbf-burundi:
     type: dhis2
     url: https://fbp-burundi.bluesquare.org
-    username: jphubinont
-    password: yjx5wzg7YXG7thn!jnr
+    username: 
+    password: 
   hesabu:
     type: custom
     url: https://orbf2.bluesquare.org/api/sets
-    token: jHtiDRZKqqUNzZlwNIVDrNkqijOtXWE9
-    dhis2_user_id: e1kxatoJhJEz
+    token: 
+    dhis2_user_id: 
 files:
   path: ./workspace

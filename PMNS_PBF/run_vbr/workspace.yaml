@@ -2,12 +2,12 @@ connections:
   pbf-pmns-rdc:
     type: dhis2
     url: https://dhis2.fbp-rdc.org
-    username: jphubinont
-    password: xmt5bae5CTX1dqh@zyj
+    username: 
+    password: 
   hesabu:
     type: custom
     url: https://orbf2.bluesquare.org/api/sets
-    token: 5e6bafc3-dfb7-4327-a427-70c76fbf365a
-    dhis2_user_id: Ytq5H2Yp7Gh
+    token: 
+    dhis2_user_id:
 files:
   path: ./workspace

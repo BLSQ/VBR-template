@@ -739,8 +739,8 @@ def process_ou(
     """
     set_ou_values(ou, frequence, period, nb_period_verif, window)
 
-    if use_quality_for_risk:
-        categorize_quality(ou)
+    categorize_quality(ou)
+    # We will always categorize the quality, even if we don't use it to calculate the final overall risk.
 
     categorize_quantity(ou, seuil_gain_verif_median, seuil_max_bas_risk, seuil_max_moyen_risk)
 
