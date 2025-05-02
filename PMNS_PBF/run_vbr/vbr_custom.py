@@ -177,7 +177,7 @@ def set_main_quality_indicators(center):
         center.finance = 0
 
 
-def set_quality_for_indicator(score, trend, seuil_high=50, seuil_mod=75):
+def set_quality_for_indicator(score, trend, seuil_high=0.5, seuil_mod=0.75):
     """
     Based on a score and in a trend, determine if the quality risk is high, moderate or low
 

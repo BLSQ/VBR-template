@@ -1,7 +1,9 @@
 import pandas as pd
 
 from RBV_package import dates
-from RBV_package import config_package as config
+
+# from RBV_package import config_package as config
+import config_package as config
 
 
 class GroupOrgUnits:
@@ -204,32 +206,32 @@ class GroupOrgUnits:
 
         num_qual_indicator_high_risk_unverified = (
             self.df_verification[~verified_centers]["high_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")))
+            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
             .mean()
         )
         num_qual_indicator_high_risk_verified = (
             self.df_verification[verified_centers]["high_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")))
+            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
             .mean()
         )
         num_qual_indicator_mod_risk_unverified = (
             self.df_verification[~verified_centers]["middle_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")))
+            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
             .mean()
         )
         num_qual_indicator_mod_risk_verified = (
             self.df_verification[verified_centers]["middle_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")))
+            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
             .mean()
         )
         num_qual_indicator_low_risk_unverified = (
             self.df_verification[~verified_centers]["low_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")))
+            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
             .mean()
         )
         num_qual_indicator_low_risk_verified = (
             self.df_verification[verified_centers]["low_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")))
+            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
             .mean()
         )
 
