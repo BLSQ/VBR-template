@@ -1,13 +1,13 @@
 connections:
-  pbf-burundi:
+  pbf-pmns-rdc:
     type: dhis2
-    url: https://fbp-burundi.bluesquare.org
+    url: https://dhis2.fbp-rdc.org
     username: 
     password: 
   hesabu:
     type: custom
     url: https://orbf2.bluesquare.org/api/sets
     token: 
-    dhis2_user_id: 
+    dhis2_user_id:
 files:
   path: ./workspace

@@ -1,0 +1,786 @@
+from openhexa.sdk import (
+    current_run,
+    pipeline,
+    workspace,
+    parameter,
+)
+import pickle
+import pandas as pd
+import os
+from vbr_custom import (
+    categorize_quality,
+    categorize_quantity,
+    get_proportions,
+    assign_taux_validation_per_zs,
+)
+import warnings
+import random
+
+from RBV_package import dates
+from RBV_package import config_package as config
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+
+@pipeline("rdc-pmns-vbr", name="rdc_pmns_vbr", timeout=20000)
+@parameter(
+    "nom_init",
+    name="Nom du fichier d'initialisation pour la simulation",
+    default="part_data_1247",
+    type=str,
+    required=True,
+)
+@parameter(
+    "frequence",
+    name="Verification une fois par:",
+    help="Une visite par mois ou une visite par trimestre",
+    type=str,
+    choices=["mois", "trimestre"],
+    default="mois",
+)
+@parameter(
+    "mois_start",
+    name="Mois de debut de la simulation",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
+    default=1,
+)
+@parameter(
+    "year_start",
+    name="Annee de debut de la simulation",
+    type=int,
+    choices=[2023, 2024, 2025],
+    help="Annee de debut de la simulation",
+    default=2023,
+)
+@parameter(
+    "mois_fin",
+    name="Mois de fin de la simulation",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
+    default=6,
+)
+@parameter(
+    "year_fin",
+    name="Annee de fin de la simulation",
+    type=int,
+    choices=[2023, 2024, 2025],
+    help="Annee de fin de la simulation",
+    default=2024,
+)
+@parameter(
+    "prix_verif",
+    name="Cout de verification (euros)",
+    type=int,
+    help="Cout de verification par centre de sante",
+    default=150000,
+)
+@parameter(
+    "seuil_gain_verif_median",
+    name="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
+    type=int,
+    help="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
+    default=200000,
+)
+@parameter(
+    "seuil_max_bas_risk",
+    name="Seuil maximal pour categorie de risque faible",
+    type=float,
+    help="Seuil maximal pour categorie de risque faible",
+    default=0.05,
+)
+@parameter(
+    "seuil_max_moyen_risk",
+    name="Seuil maximal pour categorie de risque modere",
+    type=float,
+    help="Seuil maximal pour categorie de risque modere",
+    default=0.1,
+)
+@parameter(
+    "window",
+    name="fenetre d'observation minimum (# de mois)",
+    help="Number of months that will be considered in the simulation.",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    default=6,
+)
+@parameter(
+    "nb_period_verif",
+    name="nombre minimum de visites effectuees dans le passe",
+    help="nombre de periodes minimum ayant ete verifies sur la fenetre d'observation pour etre eligible a la VBR",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    default=3,
+)
+@parameter(
+    "proportion_selection_bas_risque",
+    name="Pourcentage de centres selectionnes a risque faible",
+    type=float,
+    help="Pourcentage de centres sélectionnes parmi la catégorie a risque faible",
+    default=0.4,
+)
+@parameter(
+    "proportion_selection_moyen_risque",
+    name="Pourcentage de centres selectionnes a risque modere",
+    type=float,
+    help="Pourcentage de centres sélectionnés parmi la catégorie à risque modere",
+    default=0.8,
+)
+@parameter(
+    "proportion_selection_haut_risque",
+    name="Pourcentage de centres selectionnes a risque eleve",
+    type=float,
+    help="Pourcentage de centres sélectionnes parmi la catégorie a risque eleve",
+    default=1.0,
+)
+@parameter(
+    "paym_method_nf",
+    name="Paiement des centres non-verifies",
+    help="Quelle methode de paiement utilise t'on pour payer les centres non-verifies (complet = payer sur base des quantites declarees; taux de validation personnel/ZS : payer sur base du montant declare multiplie par le taux de validation median personnel/de la ZS sur les precedentes periodes)",
+    type=str,
+    choices=["complet", "taux validation personnel", "taux validation moyen ZS"],
+    default="taux validation personnel",
+)
+@parameter(
+    "use_quality_for_risk",
+    name="Utiliser donnees qualite pour le risque",
+    help=" (finance/hygiene/general) utilises selon les regles du PMNS pour definir le risque",
+    type=bool,
+    default=False,
+)
+@parameter("folder", name="Folder", type=str, default="PBF burundi extraction")
+def rdc_pmns_vbr(
+    nom_init,
+    frequence,
+    mois_start,
+    year_start,
+    mois_fin,
+    year_fin,
+    prix_verif,
+    seuil_gain_verif_median,
+    seuil_max_bas_risk,
+    seuil_max_moyen_risk,
+    window,
+    nb_period_verif,
+    proportion_selection_bas_risque,
+    proportion_selection_moyen_risque,
+    proportion_selection_haut_risque,
+    paym_method_nf,
+    use_quality_for_risk,
+    folder,
+):
+    regions = get_environment(nom_init)
+    start = get_month(mois_start, year_start)
+    end = get_month(mois_fin, year_fin)
+
+    path_data = create_folders(folder)
+    path_verif = create_subfolder(path_data, "verification_information")
+    path_stats = create_subfolder(path_data, "simulation_statistics")
+    path_service = create_subfolder(path_data, "service_information")
+
+    proportions = get_proportions(
+        proportion_selection_bas_risque,
+        proportion_selection_moyen_risque,
+        proportion_selection_haut_risque,
+    )
+
+    run_simulation(
+        regions,
+        frequence,
+        start,
+        end,
+        prix_verif,
+        seuil_gain_verif_median,
+        seuil_max_bas_risk,
+        seuil_max_moyen_risk,
+        window,
+        nb_period_verif,
+        proportion_selection_bas_risque,
+        proportion_selection_moyen_risque,
+        proportion_selection_haut_risque,
+        paym_method_nf,
+        use_quality_for_risk,
+        nom_init,
+        path_service,
+        path_stats,
+        path_verif,
+        proportions,
+    )
+
+
+@rdc_pmns_vbr.task
+def create_folders(folder):
+    """
+    Create the necessay folders for the simulation.
+
+    Parameters
+    ----------
+    folder : str
+        Name of the folder where we want to store the results (eg: PDF Burundi extraction).
+
+    Returns
+    -------
+    path_data : str
+        Path to the folder where we will store the results.
+    """
+    dict_paths = {
+        folder: {
+            "data": ["verification_information", "simulation_statistics", "service_information"]
+        }
+    }
+
+    os.makedirs(os.path.join(workspace.files_path, "pipelines/run_vbr", folder), exist_ok=True)
+
+    for subdir in dict_paths[folder]:
+        os.makedirs(
+            os.path.join(workspace.files_path, "pipelines/run_vbr", folder, subdir), exist_ok=True
+        )
+        for subdir2 in dict_paths[folder][subdir]:
+            os.makedirs(
+                os.path.join(workspace.files_path, "pipelines/run_vbr", folder, subdir, subdir2),
+                exist_ok=True,
+            )
+
+    path_data = os.path.join(workspace.files_path, "pipelines/run_vbr", folder, subdir)
+
+    return path_data
+
+
+@rdc_pmns_vbr.task
+def create_subfolder(folder, subfolder):
+    """
+    From a folder and a path, create a full path.
+
+    Parameters
+    ----------
+    folder : str
+        Name of the full path to the parent folder.
+    subfolder : str
+        Name of the subfolder to be created.
+
+    Returns
+    -------
+    full_path : str
+        Full path to the subfolder.
+    """
+    full_path = os.path.join(folder, subfolder)
+    return full_path
+
+
+@rdc_pmns_vbr.task
+def get_month(mois, year):
+    """
+    From month and year, get the month in the format YYYYMM.
+
+    Parameters
+    ----------
+    mois : int
+        Month of the year.
+    year : int
+        Year.
+
+    Returns
+    -------
+    int
+        Month in the format YYYYMM.
+    """
+    return year * 100 + mois
+
+
+@rdc_pmns_vbr.task
+def run_simulation(
+    regions,
+    frequence,
+    start,
+    end,
+    prix_verif,
+    seuil_gain_verif_median,
+    seuil_max_bas_risk,
+    seuil_max_moyen_risk,
+    window,
+    nb_period_verif,
+    proportion_selection_bas_risque,
+    proportion_selection_moyen_risque,
+    proportion_selection_haut_risque,
+    paym_method_nf,
+    use_quality_for_risk,
+    model_name,
+    path_service,
+    path_stats,
+    path_verif,
+    proportions,
+):
+    """
+    Run the simulation.
+    We will create three folders:
+    (1) verification_information: We have one file per period and per region.
+        Here, we store the information about verification of the centers -- if they are verified or not, and how
+        much money they win / loose if they are verified/not/how.
+    (2) simulation_statistics: Here we store the results of the simulation, per period.
+        We have some statistics about the amount of money / won lost with simulations.
+    (3) service_information: We have one file per period and per region.
+        Here we have the information per service.
+
+    Parameters
+    ----------
+    regions :  list of Group_Orgunits.
+        The initialization data. It has a list of Group_Orgunits, composed by OrgUnits objects
+        (each of the OrgUnits objects contains the data for a particular Organizational Unit).
+    frequence : str
+        Frequency of the simulation, either "mois" or "trimestre". It is inputed by the user.
+    start: int
+        The start date for the period to be considered. It is inputed by the user.
+    end : int
+        The end date for the period to be considered. It is inputed by the user.
+    prix_verif : int
+        How much it costs to verify a center (euros). It is inputed by the user.
+    seuil_gain_verif_median : int
+        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
+    seuil_max_bas_risk : float
+        Threshold for low risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    seuil_max_moyen_risk : float
+        Threshold for medium risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    window : int
+        The minimum number of months we want to consider for the simulation. It is inputed by the user.
+    nb_period_verif :int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    proportion_selection_bas_risque : float
+        The probability for a center with low risk to be verified.
+        It is inputed by the user.
+    proportion_selection_moyen_risque : float
+        The probability for a center with medium risk to be verified.
+        It is inputed by the user.
+    proportion_selection_haut_risque : float
+        The probability for a center with high risk to be verified.
+        It is inputed by the user.
+    paym_method_nf : str
+        It tells us how we will pay the centers that are not verified.
+        It is inputed by the user.
+    use_quality_for_risk : bool
+        If true, we use the quality data to evaluate the risk of the center.
+        It is inputed by the user.
+    model_name : str
+        Name of the initialization file to load.
+    path_service: str
+        The path to store the csv with the information per service in.
+    path_stats: str
+        The path to store the csv with the statistics information in.
+    path_verif: str
+        The path to store the csv with the verification information in.
+    proportions: dict
+        Dictionary with the verification probabilities for each risk category.
+    """
+    for month in [int(str(m)) for m in dates.get_date_series(str(start), str(end), frequence)]:
+        if frequence == "trimestre" and month % 100 % 3 != 0:
+            continue
+
+        current_run.log_info(f"Simulating the verification for {month}")
+
+        path_verif_per_group, full_path_stats = create_file_names(
+            path_stats,
+            path_verif,
+            frequence,
+            seuil_gain_verif_median,
+            window,
+            nb_period_verif,
+            proportion_selection_bas_risque,
+            proportion_selection_moyen_risque,
+            proportion_selection_haut_risque,
+            prix_verif,
+            seuil_max_bas_risk,
+            seuil_max_moyen_risk,
+            paym_method_nf,
+            use_quality_for_risk,
+            month,
+            model_name,
+        )
+
+        period = set_period(frequence, month)
+
+        rows = []
+
+        for group in regions:
+            new_row = simulate_month_group(
+                group,
+                path_service,
+                path_verif_per_group,
+                frequence,
+                period,
+                prix_verif,
+                seuil_gain_verif_median,
+                seuil_max_bas_risk,
+                seuil_max_moyen_risk,
+                window,
+                nb_period_verif,
+                paym_method_nf,
+                use_quality_for_risk,
+                proportions,
+            )
+            rows.append(new_row)
+
+        df_stats = pd.DataFrame(rows, columns=config.list_cols_df_stats)
+
+        df_stats.to_csv(full_path_stats, index=False)
+
+
+@rdc_pmns_vbr.task
+def get_environment(nom_init):
+    """
+    Load the simulation initialization data.
+
+    Parameters
+    ----------
+    nom_init : str
+        Name of the initialization file to load. The user choose it.
+
+    Returns
+    -------
+    regions :  list of Group_Orgunits.
+        The initialization data. It has a list of Group_Orgunits, composed by OrgUnits objects
+        (each of the OrgUnits objects contains the data for a particular Organizational Unit).
+    """
+    current_run.log_info("Chargement des données d'initialisation de la simulation")
+    data_path = f"{workspace.files_path}/pipelines/initialize_vbr/"
+    with open(f"{data_path}initialization_simulation/{nom_init}.pickle", "rb") as file:
+        # Deserialize and load the object from the file
+        regions = pickle.load(file)
+    return regions
+
+
+def create_file_names(
+    path_stats,
+    path_verif,
+    frequence,
+    seuil_gain_verif_median,
+    window,
+    nb_period_verif,
+    proportion_selection_bas_risque,
+    proportion_selection_moyen_risque,
+    proportion_selection_haut_risque,
+    prix_verif,
+    seuil_max_bas_risk,
+    seuil_max_moyen_risk,
+    paym_method_nf,
+    use_quality_for_risk,
+    month,
+    model_name,
+):
+    """
+    Create the file names where the results will be stored
+
+    Parameters
+    ----------
+    path_stats: str
+        The path to store the csv with the statistics information in.
+    path_verif: str
+        The path to store the csv with the verification information in.
+    frequence : str
+        Frequency of the simulation, either "mois" or "trimestre". It is inputed by the user.
+    seuil_gain_verif_median : int
+        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
+    window : int
+        The minimum number of months we want to consider for the simulation. It is inputed by the user.
+    nb_period_verif :int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    proportion_selection_bas_risque : float
+        The probability for a center with low risk to be verified.
+        It is inputed by the user.
+    proportion_selection_moyen_risque : float
+        The probability for a center with medium risk to be verified.
+        It is inputed by the user.
+    proportion_selection_haut_risque : float
+        The probability for a center with high risk to be verified.
+        It is inputed by the user.
+    prix_verif : int
+        How much it costs to verify a center (euros). It is inputed by the user.
+    seuil_max_bas_risk : float
+        Threshold for low risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    seuil_max_moyen_risk : float
+        Threshold for medium risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    paym_method_nf : str
+        It tells us how we will pay the centers that are not verified.
+        It is inputed by the user.
+    use_quality_for_risk : bool
+        If true, we use the quality data to evaluate the risk of the center.
+        It is inputed by the user.
+    month: int
+        Month we are running the simulation for.
+    model_name : str
+        Name of the initialization file to load.
+
+
+    Returns
+    -------
+    path_verif_per_group: str
+        The path to the verification informations.
+        We will create one csv per OU -- we will add a suffix to this name per each one
+    full_path_stats:
+        The full path to the .csv that will contain the statistics information.
+
+    """
+    file_name_verif = f"freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_mod:{proportion_selection_moyen_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}"
+    file_name_verif = file_name_verif.replace(":", "___")
+
+    path_verif_per_group = os.path.join(path_verif, file_name_verif)
+
+    file_name_stats = f"month:{month}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_mod:{proportion_selection_moyen_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}.csv"
+    file_name_stats = file_name_stats.replace(":", "___")
+
+    full_path_stats = os.path.join(path_stats, f"model___{model_name}-{file_name_stats}")
+
+    return path_verif_per_group, full_path_stats
+
+
+def set_period(frequence, month):
+    """
+    Define the period we are running the simulation for.
+
+    Parameters
+    ----------
+    frequence: str
+        The frequence of the simulation
+    month: int
+        The month we are running the simulation for.
+
+    Returns
+    --------
+    period: str or int (this is bad)
+        The period we are running the simulation for, either a month or a quarter.
+
+    """
+    if frequence == "trimestre":
+        quarter = str(dates.month_to_quarter(month))
+        period = quarter
+    else:
+        period = month
+
+    return period
+
+
+def simulate_month_group(
+    group,
+    path_service,
+    path_verif_per_group,
+    frequence,
+    period,
+    prix_verif,
+    seuil_gain_verif_median,
+    seuil_max_bas_risk,
+    seuil_max_moyen_risk,
+    window,
+    nb_period_verif,
+    paym_method_nf,
+    use_quality_for_risk,
+    proportions,
+):
+    """
+    Run the simulation for a particular month.
+
+    Parameters
+    ----------
+    group :  GroupOrgUnits.
+        List of OrgUnits. Contains the information about the verifications for a particular area.
+    path_service: str
+        The path to store the csv with the information per service in.
+    path_verif_per_group: str
+        The path to store the csv with the verification information in. We will create a sub path per OU.
+    frequence : str
+        Frequency of the simulation, either "mois" or "trimestre". It is inputed by the user.
+    period: str or int
+        The period we are running the current simulation for. Its either a month or a quarter.
+    prix_verif : int
+        How much it costs to verify a center (euros). It is inputed by the user.
+    seuil_gain_verif_median : int
+        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
+    seuil_max_bas_risk : float
+        Threshold for low risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    seuil_max_moyen_risk : float
+        Threshold for medium risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    window : int
+        The minimum number of months we want to consider for the simulation. It is inputed by the user.
+    nb_period_verif :int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    paym_method_nf : str
+        It tells us how we will pay the centers that are not verified.
+        It is inputed by the user.
+    use_quality_for_risk : bool
+        If true, we use the quality data to evaluate the risk of the center.
+        It is inputed by the user.
+    proportions: dict
+        Dictionary with the verification probabilities for each risk category.
+
+    Returns
+    -------
+    stats: tuple
+        Contains the statistics for this group and period
+    """
+    initialize_group(group, proportions, prix_verif, paym_method_nf)
+
+    for ou in group.members:
+        process_ou(
+            group,
+            ou,
+            frequence,
+            period,
+            nb_period_verif,
+            window,
+            paym_method_nf,
+            seuil_gain_verif_median,
+            seuil_max_bas_risk,
+            seuil_max_moyen_risk,
+            use_quality_for_risk,
+        )
+
+    full_path_verif = os.path.join(
+        f"{path_verif_per_group}-province___{group.name}-periode___{period}.csv",
+    )
+    group.get_verification_information()
+    df_group_service = group.get_service_information()
+    stats = group.get_statistics(period)
+
+    group.df_verification.to_csv(
+        full_path_verif,
+        index=False,
+    )
+
+    full_path_service = os.path.join(
+        f"{path_service}/province___{group.name}-periode___{period}-service.csv",
+    )
+    df_group_service.to_csv(
+        full_path_service,
+        index=False,
+    )
+
+    return stats
+
+
+def set_ou_values(ou, frequence, period, nb_period_verif, window):
+    """
+    Define the attributes for a particular organizational until.
+
+    Parameters:
+    -----------
+    ou: Orgunit
+        Contains all of the information and methods for this particular Organizational Unit
+    frequence : str
+        Frequency of the simulation, either "mois" or "trimestre". It is inputed by the user.
+    period: str or int
+        The period we are running the current simulation for. Its either a month or a quarter.
+    nb_period_verif :int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    window : int
+        The minimum number of months we want to consider for the simulation. It is inputed by the user.
+    """
+    ou.set_frequence(frequence)
+    ou.set_month_verification(period)
+    ou.set_nb_verif_min_per_window(nb_period_verif)
+    ou.set_window(window)
+
+
+def process_ou(
+    group,
+    ou,
+    frequence,
+    period,
+    nb_period_verif,
+    window,
+    paym_method_nf,
+    seuil_gain_verif_median,
+    seuil_max_bas_risk,
+    seuil_max_moyen_risk,
+    use_quality_for_risk,
+):
+    """
+    Process a particular Organizational Unit.
+    We will set its values, get it's risk and the relevant gains/losses related to verification.
+
+    Parameters
+    -----------
+    group :  GroupOrgUnits.
+        List of OrgUnits. Contains the information about the verifications for a particular area.
+    ou: Orgunit
+        Contains all of the information and methods for this particular Organizational Unit
+    frequence : str
+        Frequency of the simulation, either "mois" or "trimestre". It is inputed by the user.
+    period: str or int
+        The period we are running the current simulation for. Its either a month or a quarter.
+    nb_period_verif :int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    window : int
+        The minimum number of months we want to consider for the simulation. It is inputed by the user.
+    paym_method_nf : str
+        It tells us how we will pay the centers that are not verified.
+        It is inputed by the user.
+    seuil_gain_verif_median : int
+        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
+    seuil_max_bas_risk : float
+        Threshold for low risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    seuil_max_moyen_risk : float
+        Threshold for medium risk. It is inputed by the user.
+        (We will compare it against a measure combining the dec/ver/val quantities)
+    use_quality_for_risk : bool
+        If true, we use the quality data to evaluate the risk of the center.
+        It is inputed by the user.
+    """
+    set_ou_values(ou, frequence, period, nb_period_verif, window)
+
+    categorize_quality(ou)
+    # We will always categorize the quality, even if we don't use it to calculate the final overall risk.
+
+    categorize_quantity(ou, seuil_gain_verif_median, seuil_max_bas_risk, seuil_max_moyen_risk)
+
+    ou.mix_risks(use_quality_for_risk)
+
+    ou.get_taux_validation_median()
+
+    if paym_method_nf == "complet":
+        ou.get_gain_verif_for_period_verif(1)
+    elif paym_method_nf == "taux validation personnel":
+        ou.get_gain_verif_for_period_verif(ou.taux_validation)
+    # If the payment method is "taux validation moyen ZS" we will process the verification gains at group level.
+
+    ou.set_verification(random.uniform(0, 1) <= group.proportions[ou.risk])
+
+    ou.define_gain_quantities(group.cout_verification_centre)
+
+
+def initialize_group(group, proportions, prix_verif, paym_method_nf):
+    """
+    Initialize a particular group. We set its attributes and calculate the taux of validation.
+
+    Parameters
+    ----------
+    group :  GroupOrgUnits.
+        List of OrgUnits. Contains the information about the verifications for a particular area.
+    proportions: dict
+        Dictionary with the verification probabilities for each risk category.
+    prix_verif : int
+        How much it costs to verify a center (euros). It is inputed by the user.
+    paym_method_nf : str
+        It tells us how we will pay the centers that are not verified.
+        It is inputed by the user.
+    """
+    group.set_proportions(proportions)
+    group.set_cout_verification(prix_verif)
+
+    if paym_method_nf == "taux validation moyen ZS":
+        assign_taux_validation_per_zs(group)
+
+
+if __name__ == "__main__":
+    rdc_pmns_vbr()
