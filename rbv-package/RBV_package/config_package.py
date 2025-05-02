@@ -1,4 +1,4 @@
-list_cols_df_verfication = [
+list_cols_df_verification = [
     "period",
     "ou_id",
     "level_2_uid",
@@ -21,6 +21,9 @@ list_cols_df_verfication = [
     "subside_taux_period",
     "ecart_median",
     "categorie_risque",
+    "high_risk_quality_indicators",
+    "middle_risk_quality_indicators",
+    "low_risk_quality_indicators",
 ]
 list_cols_df_stats = [
     "province",
@@ -44,6 +47,12 @@ list_cols_df_stats = [
     "Amount of over-subsidies",
     "Average of over-subsidies (non-verified centers)",
     "Average of over-subsidies (verified centers)",
+    "Average number of high risk quality indicators (verified centers)",
+    "Average number of high risk quality indicators (non-verified centers)",
+    "Average number of middle risk quality indicators (verified centers)",
+    "Average number of middle risk quality indicators (non-verified centers)",
+    "Average number of low risk quality indicators (verified centers)",
+    "Average number of low risk quality indicators (non-verified centers)",
 ]
 list_cols_df_services = [
     "period",

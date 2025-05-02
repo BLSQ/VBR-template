@@ -74,6 +74,7 @@ class GroupOrgUnits:
         Create a pandas dataframe with the information about the center and whether it will be verified or not.
         """
         rows = []
+        list_cols_df_verification = config.list_cols_df_verification + self.qualite_indicators
 
         for ou in self.members:
             new_row = (
@@ -91,11 +92,15 @@ class GroupOrgUnits:
                     ou.subside_taux_period,
                     ou.ecart_median,
                     ou.risk,
+                    ou.quality_high_risk,
+                    ou.quality_mod_risk,
+                    ou.quality_low_risk,
                 ]
+                + [ou.indicator_scores.get(i, pd.NA) for i in self.qualite_indicators]
             )
             rows.append(new_row)
 
-        self.df_verification = pd.DataFrame(rows, columns=config.list_cols_df_verfication)
+        self.df_verification = pd.DataFrame(rows, columns=list_cols_df_verification)
 
     def get_service_information(self):
         """
@@ -197,6 +202,37 @@ class GroupOrgUnits:
             "diff_in_subsidies_tauxval_period"
         ].mean()
 
+        num_qual_indicator_high_risk_unverified = (
+            self.df_verification[~verified_centers]["high_risk_quality_indicators"]
+            .map(lambda x: len(x.split("--")))
+            .mean()
+        )
+        num_qual_indicator_high_risk_verified = (
+            self.df_verification[verified_centers]["high_risk_quality_indicators"]
+            .map(lambda x: len(x.split("--")))
+            .mean()
+        )
+        num_qual_indicator_mod_risk_unverified = (
+            self.df_verification[~verified_centers]["middle_risk_quality_indicators"]
+            .map(lambda x: len(x.split("--")))
+            .mean()
+        )
+        num_qual_indicator_mod_risk_verified = (
+            self.df_verification[verified_centers]["middle_risk_quality_indicators"]
+            .map(lambda x: len(x.split("--")))
+            .mean()
+        )
+        num_qual_indicator_low_risk_unverified = (
+            self.df_verification[~verified_centers]["low_risk_quality_indicators"]
+            .map(lambda x: len(x.split("--")))
+            .mean()
+        )
+        num_qual_indicator_low_risk_verified = (
+            self.df_verification[verified_centers]["low_risk_quality_indicators"]
+            .map(lambda x: len(x.split("--")))
+            .mean()
+        )
+
         new_row = (
             self.name,
             period,
@@ -219,6 +255,12 @@ class GroupOrgUnits:
             money_lost_by_vbr,
             gain_unverified_centers_for_vbr,
             gain_verified_centers_for_vbr,
+            num_qual_indicator_high_risk_unverified,
+            num_qual_indicator_high_risk_verified,
+            num_qual_indicator_mod_risk_unverified,
+            num_qual_indicator_mod_risk_verified,
+            num_qual_indicator_low_risk_unverified,
+            num_qual_indicator_low_risk_verified,
         )
 
         return new_row
@@ -384,17 +426,27 @@ class Orgunit:
         self.diff_subsidies_decval_median = None
         self.diff_subsidies_decval_median_period = None
 
+        # Quality indicators
+        self.indicator_scores = {}
+        self.general_quality = 0
+        self.hygiene = 0
+        self.finance = 0
+        self.quality_high_risk = ""
+        self.quality_mod_risk = ""
+        self.quality_low_risk = ""
+        self.risk_quality = ""
+
     def initialize_quantite(self):
         """
         Initialize the quantity data.
         """
         self.quantite = self.quantite.sort_values(by=["ou", "service", "quarter", "month"])
         if "level_6_uid" not in self.quantite.columns:
-            self.quantite["level_6_uid"] = pd.NA
-            self.quantite["level_6_name"] = pd.NA
-            self.qualite["level_6_uid"] = pd.NA
-            self.qualite["level_6_name"] = pd.NA
-        self.quantite["month"] = self.quantite["month"].astype(str)
+            self.quantite.loc[:, "level_6_uid"] = pd.NA
+            self.quantite.loc[:, "level_6_name"] = pd.NA
+            self.qualite.loc[:, "level_6_uid"] = pd.NA
+            self.qualite.loc[:, "level_6_name"] = pd.NA
+        self.quantite.loc["month"] = self.quantite["month"].astype(str)
 
     def initialize_qualite(self):
         """
