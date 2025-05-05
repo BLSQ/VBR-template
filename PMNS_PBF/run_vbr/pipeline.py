@@ -76,14 +76,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Cout de verification (euros)",
     type=int,
     help="Cout de verification par centre de sante",
-    default=150000,
+    default=100,
 )
 @parameter(
     "seuil_gain_verif_median",
     name="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
     type=int,
     help="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
-    default=200000,
+    default=150,
 )
 @parameter(
     "seuil_max_bas_risk",
@@ -687,6 +687,10 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     ou.set_frequence(frequence)
     ou.set_month_verification(period)
     ou.set_nb_verif_min_per_window(nb_period_verif)
+    if pd.api.types.is_numeric_dtype(ou.quantite["month"]):
+        ou.quantite["month"] = ou.quantite["month"].astype("Int64").astype(str)
+    if pd.api.types.is_numeric_dtype(ou.qualite["month"]):
+        ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
     ou.set_window(window)
 
 

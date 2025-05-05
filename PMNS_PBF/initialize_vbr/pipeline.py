@@ -41,9 +41,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     required=True,
     default="202406",
 )
-@parameter(
-    "model_name", name="Name of the model", type=str, default="part_data_1247", required=True
-)
+@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
     "window",
     type=int,
