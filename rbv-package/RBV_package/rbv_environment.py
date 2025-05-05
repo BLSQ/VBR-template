@@ -436,6 +436,8 @@ class Orgunit:
         self.quality_mod_risk = ""
         self.quality_low_risk = ""
         self.risk_quality = ""
+        self.risk_gain_median = ""
+        self.risk_quantite = ""
 
     def initialize_quantite(self):
         """
@@ -447,7 +449,7 @@ class Orgunit:
             self.quantite.loc[:, "level_6_name"] = pd.NA
             self.qualite.loc[:, "level_6_uid"] = pd.NA
             self.qualite.loc[:, "level_6_name"] = pd.NA
-        self.quantite.loc["month"] = self.quantite["month"].astype(str)
+        self.quantite.loc["month"] = self.quantite["month"].astype("Int64").astype(str)
 
     def initialize_qualite(self):
         """
@@ -455,7 +457,7 @@ class Orgunit:
         """
         self.qualite = self.qualite.sort_values(by=["ou", "indicator", "quarter"])
         self.qualite = self.qualite.drop_duplicates(["ou", "indicator", "quarter"])
-        self.qualite["month"] = self.qualite["month"].astype(str)
+        self.qualite["month"] = self.qualite["month"].astype("Int64").astype(str)
 
     def set_verification(self, is_verified):
         """
