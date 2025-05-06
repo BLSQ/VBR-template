@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
-    default="part_data_1247",
+    default="model",
     type=str,
     required=True,
 )
@@ -527,7 +527,7 @@ def create_file_names(
         The full path to the .csv that will contain the statistics information.
 
     """
-    file_name_verif = f"freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_mod:{proportion_selection_moyen_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}"
+    file_name_verif = f"model___{model_name}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_mod:{proportion_selection_moyen_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}"
     file_name_verif = file_name_verif.replace(":", "___")
 
     path_verif_per_group = os.path.join(path_verif, file_name_verif)
