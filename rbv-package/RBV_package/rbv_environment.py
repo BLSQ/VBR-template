@@ -595,6 +595,7 @@ class Orgunit:
                 quantite_period_service["multiplication_factor"] = self.taux_validation_par_service[
                     "taux_validation"
                 ].mean()
+                # Note that you should never pass through here.
             else:
                 quantite_period_service["multiplication_factor"] = taux_validation_filtered.iloc[0]
         else:

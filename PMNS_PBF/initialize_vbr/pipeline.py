@@ -73,15 +73,17 @@ def buu_init_vbr(
     contract_group_id = get_contract_group_unit_id(hesabu_params)
     packages = fetch_hesabu_package(hesabu, packages_hesabu)
     periods = get_periods(period, window)
-    contracts = fetch_contracts(dhis, program_id)
+    contracts = fetch_contracts(dhis, program_id, model_name)
     done = get_package_values(dhis, periods, packages, contract_group_id, extract)
-    quant = prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract)
-    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract)
+    quant = prepare_quantity_data(
+        done, periods, packages, contracts, hesabu_params, extract, model_name
+    )
+    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
 
 
 @buu_init_vbr.task
-def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract):
+def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract, model_name):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -103,6 +105,8 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         Contains the information we want to extract from Hesabu.
     extract: bool
         If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
+    model_name: str
+        The name of the model. We will use it for the name of the csv file.
 
     Returns
     -------
@@ -141,7 +145,6 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
-        print(data.contract_end_date.unique())
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
 
@@ -151,15 +154,18 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data.csv", index=False
+            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv",
+            index=False,
         )
     else:
-        data = pd.read_csv(f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data.csv")
+        data = pd.read_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv"
+        )
     return data
 
 
 @buu_init_vbr.task
-def prepare_quality_data(done, periods, packages, hesabu_params, extract):
+def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name):
     """Create a CSV file with the quality data.
     (1) We combine all of the data from the packages cvs's that have quality data.
     (2) We select the columns that we are interested in.
@@ -178,6 +184,8 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract):
         Contains the information we want to extract from Hesabu.
     extract: bool
         If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
+        model_name: str
+        The name of the model. We will use it for the name of the csv file.
 
     Returns
     -------
@@ -190,26 +198,30 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract):
             if hesabu_params["packages"][str(id)] == "qualite" and os.path.exists(
                 f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
             ):
-                for p in [dates.month_to_quarter(str(p)) for p in periods]:
+                for p, q in [(p, dates.month_to_quarter(str(p))) for p in periods]:
                     if os.path.exists(
-                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
+                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{q}.csv"
                     ):
                         df = pd.read_csv(
-                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
+                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{q}.csv"
                         )
+                        df["month"] = str(p)
                         data = pd.concat([data, df], ignore_index=True)
-        data = data[list(hesabu_params["qualite_attributes"].keys())]
+        data = data[list(hesabu_params["qualite_attributes"].keys()) + ["month"]]
         data.rename(
             columns=hesabu_params["qualite_attributes"],
             inplace=True,
         )
         data["score"] = data["num"] / data["denom"]
-        data["month"] = data["quarter"].map(dates.quarter_to_months)
+        data["month_final"] = data["quarter"].map(dates.quarter_to_months)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data.csv", index=False
+            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv",
+            index=False,
         )
     else:
-        data = pd.read_csv(f"{workspace.files_path}/pipelines/initialize_vbr/quality_data.csv")
+        data = pd.read_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv"
+        )
     return data
 
 
@@ -265,7 +277,7 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
                     )
                     nb_tot += 1
 
-            print(f"Province= {province}. Number of orgunits= {nb_tot}")
+            current_run.log_info(f"Province= {province}. Number of orgunits= {nb_tot}")
             regions.append(group_of_ou)
 
     else:
@@ -289,7 +301,7 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
                     )
                 )
                 nb_tot += 1
-        print(f"number of orgunits= {nb_tot}")
+        current_run.log_info(f"number of orgunits= {nb_tot}")
         regions.append(group_of_ou)
 
     if not os.path.exists(
@@ -302,7 +314,7 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
     ) as file:
         # Serialize and save the object to the file
         pickle.dump(regions, file)
-    print(
+    current_run.log_info(
         f"Fichier d'initialisation sauvé: {workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle"
     )
     return regions
@@ -518,7 +530,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
 
 
 @buu_init_vbr.task
-def fetch_contracts(dhis, contract_program_id):
+def fetch_contracts(dhis, contract_program_id, model_name):
     """Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
 
     Parameters
@@ -529,6 +541,8 @@ def fetch_contracts(dhis, contract_program_id):
         The ID of the program  in DHIS2 that we want to extract the data elements from.
         (The data in DHIS2 is organized by contracts.
         We specify the ID of the contract that relates to VBR in the pertinent country)
+    model_name: str
+        The name of the model. We will use it for the name of the csv file.
 
     Returns
     -------
@@ -572,7 +586,9 @@ def fetch_contracts(dhis, contract_program_id):
         records.append(record)
 
     records_df = pd.DataFrame(records)
-    records_df.to_csv(f"{workspace.files_path}/pipelines/initialize_vbr/contracts.csv", index=False)
+    records_df.to_csv(
+        f"{workspace.files_path}/pipelines/initialize_vbr/contracts_{model_name}.csv", index=False
+    )
     return records_df
 
 
