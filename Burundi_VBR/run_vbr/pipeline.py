@@ -120,7 +120,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Pourcentage de centres selectionnes a risque faible",
     type=float,
     help="Pourcentage de centres sélectionnes parmi la catégorie a risque faible",
-    default=0.4,
+    default=0.1,
 )
 @parameter(
     "proportion_selection_moyen_risque",
