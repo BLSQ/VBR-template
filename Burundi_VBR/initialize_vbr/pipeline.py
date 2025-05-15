@@ -39,7 +39,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202406",
+    default="202412",
 )
 @parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
@@ -47,9 +47,15 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to consider",
     required=True,
-    default=24,
+    default=36,
 )
 @parameter("selection_provinces", type=bool, default=True)
+@parameter(
+    "clean_data",
+    help="If true, weird quantite values will be discarded in the pickle file",
+    type=bool,
+    default=True,
+)
 @parameter("extract", name="Extraire les données", type=bool, default=True)
 def buu_init_vbr(
     dhis_con,
@@ -60,6 +66,7 @@ def buu_init_vbr(
     model_name,
     window,
     selection_provinces,
+    clean_data,
 ):
     """Pipeline to extract the necessary data.
 
@@ -75,9 +82,10 @@ def buu_init_vbr(
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
     done = get_package_values(dhis, periods, packages, contract_group_id, extract)
-    quant = prepare_quantity_data(
+    quant_full = prepare_quantity_data(
         done, periods, packages, contracts, hesabu_params, extract, model_name
     )
+    quant = clean_quant_data(quant_full, clean_data, model_name)
     qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
 
@@ -154,12 +162,12 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv",
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
             index=False,
         )
     else:
         data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv"
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
         )
     return data
 
@@ -215,12 +223,12 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
         data["score"] = data["num"] / data["denom"]
         data["month_final"] = data["quarter"].map(dates.quarter_to_months)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv",
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
             index=False,
         )
     else:
         data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv"
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
         )
     return data
 
@@ -318,6 +326,60 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
         f"Fichier d'initialisation sauvé: {workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle"
     )
     return regions
+
+
+@buu_init_vbr.task
+def clean_quant_data(quant, clean_data, model_name):
+    """
+    Clean the quantity data. Only if the bool_clean_data is set to True.
+    We remove the rows where the validated value is a lot bigger than the declared value.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    clean_data: bool
+        If True, clean the data. If False, we don't do anything.
+    model_name: str
+        The name of the model. We will use it for the name of the csv file.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    """
+    if clean_data:
+        quant, outliers = remove_weirdly_high_validated_values(quant)
+        outliers.to_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/outliers_quantity_data_{model_name}.csv",
+            index=False,
+        )
+
+    return quant
+
+
+def remove_weirdly_high_validated_values(quant):
+    """
+    Remove the rows where the validated value is a lot bigger than the declared value.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    """
+    max_difference = -1500
+    quant["ratio dec-val"] = 100 * (quant["dec"] - quant["val"]) / quant["ver"]
+    ser_less_than_1500 = quant["ratio dec-val"] < max_difference
+    outliers = quant[ser_less_than_1500].sort_values("ratio dec-val")
+    quant = quant[~ser_less_than_1500]
+    quant = quant.drop(columns=["ratio dec-val"])
+    outliers = outliers.drop(columns=["ratio dec-val"])
+    return quant, outliers
 
 
 @buu_init_vbr.task
@@ -587,7 +649,8 @@ def fetch_contracts(dhis, contract_program_id, model_name):
 
     records_df = pd.DataFrame(records)
     records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/contracts_{model_name}.csv", index=False
+        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
+        index=False,
     )
     return records_df
 

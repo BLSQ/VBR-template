@@ -19,6 +19,8 @@ import random
 from RBV_package import dates
 from RBV_package import config_package as config
 
+import toolbox
+
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -123,13 +125,6 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     default=0.1,
 )
 @parameter(
-    "proportion_selection_moyen_risque",
-    name="Pourcentage de centres selectionnes a risque modere",
-    type=float,
-    help="Pourcentage de centres sélectionnés parmi la catégorie à risque modere",
-    default=0.8,
-)
-@parameter(
     "proportion_selection_haut_risque",
     name="Pourcentage de centres selectionnes a risque eleve",
     type=float,
@@ -151,7 +146,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=bool,
     default=False,
 )
-@parameter("folder", name="Folder", type=str, default="PBF burundi extraction")
+@parameter(
+    "max_nb_services",
+    name="Maximum number of services that can have a ecart bigger than seuil_max_moyen_risk",
+    help="Threshold for the number of services that can have a weighted_ecart_dec_val bigger than seuil_max_moyen_risk without the center being high risk",
+    type=int,
+    default=0,
+)
+@parameter("folder", name="Folder", type=str, default="Extraction")
 def run_vbr_burundi(
     nom_init,
     frequence,
@@ -166,11 +168,11 @@ def run_vbr_burundi(
     window,
     nb_period_verif,
     proportion_selection_bas_risque,
-    proportion_selection_moyen_risque,
     proportion_selection_haut_risque,
     paym_method_nf,
     use_quality_for_risk,
     folder,
+    max_nb_services,
 ):
     regions = get_environment(nom_init)
     start = get_month(mois_start, year_start)
@@ -183,7 +185,6 @@ def run_vbr_burundi(
 
     proportions = get_proportions(
         proportion_selection_bas_risque,
-        proportion_selection_moyen_risque,
         proportion_selection_haut_risque,
     )
 
@@ -199,7 +200,6 @@ def run_vbr_burundi(
         window,
         nb_period_verif,
         proportion_selection_bas_risque,
-        proportion_selection_moyen_risque,
         proportion_selection_haut_risque,
         paym_method_nf,
         use_quality_for_risk,
@@ -208,6 +208,7 @@ def run_vbr_burundi(
         path_stats,
         path_verif,
         proportions,
+        max_nb_services,
     )
 
 
@@ -303,7 +304,6 @@ def run_simulation(
     window,
     nb_period_verif,
     proportion_selection_bas_risque,
-    proportion_selection_moyen_risque,
     proportion_selection_haut_risque,
     paym_method_nf,
     use_quality_for_risk,
@@ -312,6 +312,7 @@ def run_simulation(
     path_stats,
     path_verif,
     proportions,
+    max_nb_services,
 ):
     """
     Run the simulation.
@@ -353,9 +354,6 @@ def run_simulation(
     proportion_selection_bas_risque : float
         The probability for a center with low risk to be verified.
         It is inputed by the user.
-    proportion_selection_moyen_risque : float
-        The probability for a center with medium risk to be verified.
-        It is inputed by the user.
     proportion_selection_haut_risque : float
         The probability for a center with high risk to be verified.
         It is inputed by the user.
@@ -375,6 +373,9 @@ def run_simulation(
         The path to store the csv with the verification information in.
     proportions: dict
         Dictionary with the verification probabilities for each risk category.
+    max_nb_services: int
+        Threshold for the number of services that can have a weighted_ecart_dec_val
+        bigger than seuil_max_moyen_risk without the center being high risk
     """
     for month in [int(str(m)) for m in dates.get_date_series(str(start), str(end), frequence)]:
         if frequence == "trimestre" and month % 100 % 3 != 0:
@@ -391,7 +392,6 @@ def run_simulation(
             window,
             nb_period_verif,
             proportion_selection_bas_risque,
-            proportion_selection_moyen_risque,
             proportion_selection_haut_risque,
             prix_verif,
             seuil_max_bas_risk,
@@ -400,6 +400,7 @@ def run_simulation(
             use_quality_for_risk,
             month,
             model_name,
+            max_nb_services,
         )
 
         period = set_period(frequence, month)
@@ -422,6 +423,7 @@ def run_simulation(
                 paym_method_nf,
                 use_quality_for_risk,
                 proportions,
+                max_nb_services,
             )
             rows.append(new_row)
 
@@ -463,7 +465,6 @@ def create_file_names(
     window,
     nb_period_verif,
     proportion_selection_bas_risque,
-    proportion_selection_moyen_risque,
     proportion_selection_haut_risque,
     prix_verif,
     seuil_max_bas_risk,
@@ -472,6 +473,7 @@ def create_file_names(
     use_quality_for_risk,
     month,
     model_name,
+    max_nb_services,
 ):
     """
     Create the file names where the results will be stored
@@ -496,9 +498,6 @@ def create_file_names(
     proportion_selection_bas_risque : float
         The probability for a center with low risk to be verified.
         It is inputed by the user.
-    proportion_selection_moyen_risque : float
-        The probability for a center with medium risk to be verified.
-        It is inputed by the user.
     proportion_selection_haut_risque : float
         The probability for a center with high risk to be verified.
         It is inputed by the user.
@@ -520,6 +519,9 @@ def create_file_names(
         Month we are running the simulation for.
     model_name : str
         Name of the initialization file to load.
+    max_nb_services: int
+        Threshold for the number of services that can have a weighted_ecart_dec_val
+        bigger than seuil_max_moyen_risk without the center being high risk
 
 
     Returns
@@ -531,12 +533,12 @@ def create_file_names(
         The full path to the .csv that will contain the statistics information.
 
     """
-    file_name_verif = f"model___{model_name}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_mod:{proportion_selection_moyen_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}"
+    file_name_verif = f"model___{model_name}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}-max_high:{max_nb_services}"
     file_name_verif = file_name_verif.replace(":", "___")
 
     path_verif_per_group = os.path.join(path_verif, file_name_verif)
 
-    file_name_stats = f"month:{month}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_mod:{proportion_selection_moyen_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}.csv"
+    file_name_stats = f"month:{month}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}-max_high:{max_nb_services}.csv"
     file_name_stats = file_name_stats.replace(":", "___")
 
     full_path_stats = os.path.join(path_stats, f"model___{model_name}-{file_name_stats}")
@@ -589,6 +591,7 @@ def simulate_month_group(
     paym_method_nf,
     use_quality_for_risk,
     proportions,
+    max_nb_services,
 ):
     """
     Run the simulation for a particular month.
@@ -628,6 +631,9 @@ def simulate_month_group(
         It is inputed by the user.
     proportions: dict
         Dictionary with the verification probabilities for each risk category.
+    max_nb_services: int
+        Threshold for the number of services that can have a weighted_ecart_dec_val
+        bigger than seuil_max_moyen_risk without the center being high risk
 
     Returns
     -------
@@ -649,13 +655,14 @@ def simulate_month_group(
             seuil_max_bas_risk,
             seuil_max_moyen_risk,
             use_quality_for_risk,
+            max_nb_services,
         )
 
     full_path_verif = os.path.join(
-        f"{path_verif_per_group}-province___{group.name}-periode___{period}.csv",
+        f"{path_verif_per_group}-prov___{group.name}-prd___{period}.csv",
     )
     group.get_verification_information()
-    df_group_service = group.get_service_information()
+    df_group_service = toolbox.get_service_information(group)
     stats = group.get_statistics(period)
 
     group.df_verification.to_csv(
@@ -664,7 +671,7 @@ def simulate_month_group(
     )
 
     full_path_service = os.path.join(
-        f"{path_service_per_group}-province___{group.name}-periode___{period}-service.csv",
+        f"{path_service_per_group}-prov___{group.name}-prd___{period}-service.csv",
     )
     df_group_service.to_csv(
         full_path_service,
@@ -700,6 +707,7 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     if pd.api.types.is_numeric_dtype(ou.qualite["month"]):
         ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
     ou.set_window(window)
+    ou.get_ecart_median()
 
 
 def process_ou(
@@ -714,6 +722,7 @@ def process_ou(
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
     use_quality_for_risk,
+    max_nb_services,
 ):
     """
     Process a particular Organizational Unit.
@@ -748,13 +757,18 @@ def process_ou(
     use_quality_for_risk : bool
         If true, we use the quality data to evaluate the risk of the center.
         It is inputed by the user.
+    max_nb_services: int
+        Threshold for the number of services that can have a weighted_ecart_dec_val
+        bigger than seuil_max_moyen_risk without the center being high risk
     """
     set_ou_values(ou, frequence, period, nb_period_verif, window)
 
     if use_quality_for_risk:
         categorize_quality(ou)
 
-    categorize_quantity(ou, seuil_gain_verif_median, seuil_max_bas_risk, seuil_max_moyen_risk)
+    categorize_quantity(
+        ou, seuil_gain_verif_median, seuil_max_bas_risk, seuil_max_moyen_risk, max_nb_services
+    )
 
     ou.mix_risks(use_quality_for_risk)
 
