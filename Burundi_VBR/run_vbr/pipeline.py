@@ -661,7 +661,7 @@ def simulate_month_group(
     full_path_verif = os.path.join(
         f"{path_verif_per_group}-prov___{group.name}-prd___{period}.csv",
     )
-    group.get_verification_information()
+    toolbox.get_verification_information(group)
     df_group_service = toolbox.get_service_information(group)
     stats = group.get_statistics(period)
 

@@ -101,7 +101,7 @@ def eligible_for_vbr(center, months_since_last_visit=3, min_subside=50):
     """
     if not_enough_visits_in_interval(center):
         return False
-    elif center.risk == "uneligible":
+    elif center.category_centre == "pca":
         return False
     elif not visited_since(center, months_since_last_visit):
         return False
@@ -160,17 +160,20 @@ def categorize_quantity(
                 if ecart >= seuil_max_bas_risk
             ]
         )
-        nb_services_moyen_risk = len(
+        center.nb_services_moyen_risk = len(
             [
                 ecart
                 for ecart in center.ecart_median_per_service.ecart_median.values
                 if ecart >= seuil_max_moyen_risk
             ]
         )
+        center.nb_services = len(
+            [ecart for ecart in center.ecart_median_per_service.ecart_median.values]
+        )
 
         if center.ecart_median_per_service.ecart_median.max() <= seuil_max_bas_risk:
             center.risk_quantite = "low"
-        elif nb_services_moyen_risk > max_nb_services:
+        elif center.nb_services_moyen_risk > max_nb_services:
             center.risk_quantite = "high"
         elif center.nb_services_risky == 1:
             center.risk_quantite = "moderate_1"
@@ -183,6 +186,8 @@ def categorize_quantity(
         center.diff_subsidies_decval_median = pd.NA
         center.risk = "uneligible"
         center.risk_gain_median = "uneligible"
+        center.nb_services_moyen_risk = pd.NA
+        center.nb_services = pd.NA
 
 
 def assign_taux_validation_per_zs(group):
