@@ -103,42 +103,56 @@ class GroupOrgUnits:
 
         self.df_verification = pd.DataFrame(rows, columns=list_cols_df_verification)
 
-    def get_service_information(self):
-        """
-        Create a DataFrame with the information per service.
-        Note: the method get_gain_verif_for_period_verif has a lot of information per service.
-        If we get the information from there, we can probably create a more complete .csv
 
-        Returns
-        -------
-        df : pd.DataFrame
-            DataFrame with the information per service.
-        """
-        rows = []
+def get_service_information(self):
+    """
+    Create a DataFrame with the information per service.
+    Note: the method get_gain_verif_for_period_verif has a lot of information per service.
+    If we get the information from there, we can probably create a more complete .csv
 
-        for ou in self.members:
-            list_services = list(ou.quantite_window["service"].unique())
+    Returns
+    -------
+    df : pd.DataFrame
+        DataFrame with the information per service.
+    """
+    rows = []
 
-            for service in list_services:
-                taux_validation = ou.quantite_window[ou.quantite_window.service == service][
-                    "taux_validation"
-                ].median()
-                if pd.isnull(taux_validation):
-                    taux_validation = ou.taux_validation
+    for ou in self.members:
+        list_services = list(ou.quantite_window["service"].unique())
 
-                new_row = (
-                    ou.period,
-                    ou.id,
-                    ou.category_centre,
-                    hot_encode(not ou.is_verified),
-                    service,
-                    taux_validation,
-                )
+        for service in list_services:
+            taux_validation = ou.quantite_window[ou.quantite_window.service == service][
+                "taux_validation"
+            ].median()
+            if pd.isnull(taux_validation):
+                taux_validation = ou.taux_validation
 
-                rows.append(new_row)
+            if isinstance(ou.ecart_median_per_service, pd.DataFrame):
+                ecart = ou.ecart_median_per_service[
+                    ou.ecart_median_per_service["service"] == service
+                ]["ecart_median"].median()
 
-        df = pd.DataFrame(rows, columns=config.list_cols_df_services)
-        return df
+                if pd.isnull(ecart):
+                    ecart = ou.ecart_median
+
+            else:
+                ecart = pd.NA
+
+            new_row = (
+                ou.period,
+                ou.id,
+                ou.category_centre,
+                hot_encode(not ou.is_verified),
+                ou.risk,
+                service,
+                taux_validation,
+                ecart,
+            )
+
+            rows.append(new_row)
+
+    df = pd.DataFrame(rows, columns=config.list_cols_df_services)
+    return df
 
     def get_statistics(self, period):
         """
@@ -326,6 +340,8 @@ class Orgunit:
         Periods in which the Organizational Unit has been verified.
     nb_services_risky: int
         Number of services that are not at low risk.
+    nb_services_moyen_risk: int
+        Number of services whose seuil is under the medium risk threshold.
     period: str
         The date we are running the simulation for.
     period_type: str
@@ -376,11 +392,11 @@ class Orgunit:
         self.id = ou_id
 
         if uneligible_vbr:
-            self.risk = "uneligible"
             self.category_centre = "pca"
         else:
-            self.risk = "unknown"
             self.category_centre = "pma"
+
+        self.risk = "unknown"
 
         self.quantite = quantite
         self.qualite = qualite
@@ -418,6 +434,7 @@ class Orgunit:
 
         self.nb_periods_verified = None
         self.nb_services_risky = None
+        self.nb_services_moyen_risk = None
 
         self.subside_dec_period = None
         self.subside_val_period = None
