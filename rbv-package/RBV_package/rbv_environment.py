@@ -154,131 +154,130 @@ def get_service_information(self):
     df = pd.DataFrame(rows, columns=config.list_cols_df_services)
     return df
 
-    def get_statistics(self, period):
-        """
-        Create the statistics for the period and Group of Organizational Units
 
-        Parameters
-        ----------
-        period: str
-            The date we are running the simulation for.
+def get_statistics(self, period):
+    """
+    Create the statistics for the period and Group of Organizational Units
 
-        Returns
-        -------
-        stats: pd.DataFrame
-            The statistics for the period and Group of Organizational Units.
-        """
-        verified_centers = self.df_verification.bool_verified
-        vbr_beneficial = self.df_verification["benefice_complet_vbr"] < 0
+    Parameters
+    ----------
+    period: str
+        The date we are running the simulation for.
 
-        nb_centers = len(self.members)
-        nb_centers_verified = self.df_verification[verified_centers].shape[0]
+    Returns
+    -------
+    stats: pd.DataFrame
+        The statistics for the period and Group of Organizational Units.
+    """
+    verified_centers = self.df_verification.bool_verified
+    vbr_beneficial = self.df_verification["benefice_complet_vbr"] < 0
 
-        high_risk = len(
-            [ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"]
-        )
-        mod_risk = len([ou.id for ou in self.members if "moderate" in ou.risk])
-        low_risk = len([ou.id for ou in self.members if ou.risk == "low"])
+    nb_centers = len(self.members)
+    nb_centers_verified = self.df_verification[verified_centers].shape[0]
 
-        cost_verification_vbr = self.cout_verification_centre * nb_centers_verified
-        cost_verification_syst = self.cout_verification_centre * nb_centers
+    high_risk = len([ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"])
+    mod_risk = len([ou.id for ou in self.members if "moderate" in ou.risk])
+    low_risk = len([ou.id for ou in self.members if ou.risk == "low"])
 
-        subsides_vbr = (
-            self.df_verification[verified_centers]["subside_val_period"].sum()
-            + self.df_verification[~verified_centers]["subside_taux_period"].sum()
-        )
-        subsides_syst = self.df_verification["subside_val_period"].sum()
+    cost_verification_vbr = self.cout_verification_centre * nb_centers_verified
+    cost_verification_syst = self.cout_verification_centre * nb_centers
 
-        cout_total_vbr = subsides_vbr + cost_verification_vbr
-        cout_total_syst = subsides_syst + cost_verification_syst
+    subsides_vbr = (
+        self.df_verification[verified_centers]["subside_val_period"].sum()
+        + self.df_verification[~verified_centers]["subside_taux_period"].sum()
+    )
+    subsides_syst = self.df_verification["subside_val_period"].sum()
 
-        ratio_verif_costtotal_vbr = cost_verification_vbr / cout_total_vbr
-        ratio_verif_costtotal_syst = cost_verification_syst / cout_total_syst
+    cout_total_vbr = subsides_vbr + cost_verification_vbr
+    cout_total_syst = subsides_syst + cost_verification_syst
 
-        nb_centre_vbr_made_money = len(
-            self.df_verification[(~verified_centers) & vbr_beneficial]["ou_id"].unique()
-        )
-        nb_centre_vbr_lost_money = len(
-            self.df_verification[(~verified_centers) & (~vbr_beneficial)]["ou_id"].unique()
-        )
+    ratio_verif_costtotal_vbr = cost_verification_vbr / cout_total_vbr
+    ratio_verif_costtotal_syst = cost_verification_syst / cout_total_syst
 
-        money_won_by_vbr = self.df_verification[(~verified_centers) & vbr_beneficial][
-            "benefice_complet_vbr"
-        ].sum()
+    nb_centre_vbr_made_money = len(
+        self.df_verification[(~verified_centers) & vbr_beneficial]["ou_id"].unique()
+    )
+    nb_centre_vbr_lost_money = len(
+        self.df_verification[(~verified_centers) & (~vbr_beneficial)]["ou_id"].unique()
+    )
 
-        money_lost_by_vbr = self.df_verification[(~verified_centers) & (~vbr_beneficial)][
-            "benefice_complet_vbr"
-        ].sum()
+    money_won_by_vbr = self.df_verification[(~verified_centers) & vbr_beneficial][
+        "benefice_complet_vbr"
+    ].sum()
 
-        gain_unverified_centers_for_vbr = self.df_verification[~verified_centers][
-            "diff_in_subsidies_tauxval_period"
-        ].mean()
-        gain_verified_centers_for_vbr = self.df_verification[verified_centers][
-            "diff_in_subsidies_tauxval_period"
-        ].mean()
+    money_lost_by_vbr = self.df_verification[(~verified_centers) & (~vbr_beneficial)][
+        "benefice_complet_vbr"
+    ].sum()
 
-        num_qual_indicator_high_risk_unverified = (
-            self.df_verification[~verified_centers]["high_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_high_risk_verified = (
-            self.df_verification[verified_centers]["high_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_mod_risk_unverified = (
-            self.df_verification[~verified_centers]["middle_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_mod_risk_verified = (
-            self.df_verification[verified_centers]["middle_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_low_risk_unverified = (
-            self.df_verification[~verified_centers]["low_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_low_risk_verified = (
-            self.df_verification[verified_centers]["low_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
+    gain_unverified_centers_for_vbr = self.df_verification[~verified_centers][
+        "diff_in_subsidies_tauxval_period"
+    ].mean()
+    gain_verified_centers_for_vbr = self.df_verification[verified_centers][
+        "diff_in_subsidies_tauxval_period"
+    ].mean()
 
-        new_row = (
-            self.name,
-            period,
-            nb_centers,
-            high_risk,
-            mod_risk,
-            low_risk,
-            nb_centers_verified,
-            cost_verification_vbr,
-            cost_verification_syst,
-            subsides_vbr,
-            subsides_syst,
-            cout_total_vbr,
-            cout_total_syst,
-            ratio_verif_costtotal_vbr,
-            ratio_verif_costtotal_syst,
-            nb_centre_vbr_made_money,
-            nb_centre_vbr_lost_money,
-            money_won_by_vbr,
-            money_lost_by_vbr,
-            gain_unverified_centers_for_vbr,
-            gain_verified_centers_for_vbr,
-            num_qual_indicator_high_risk_unverified,
-            num_qual_indicator_high_risk_verified,
-            num_qual_indicator_mod_risk_unverified,
-            num_qual_indicator_mod_risk_verified,
-            num_qual_indicator_low_risk_unverified,
-            num_qual_indicator_low_risk_verified,
-        )
+    num_qual_indicator_high_risk_unverified = (
+        self.df_verification[~verified_centers]["high_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_high_risk_verified = (
+        self.df_verification[verified_centers]["high_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_mod_risk_unverified = (
+        self.df_verification[~verified_centers]["middle_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_mod_risk_verified = (
+        self.df_verification[verified_centers]["middle_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_low_risk_unverified = (
+        self.df_verification[~verified_centers]["low_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_low_risk_verified = (
+        self.df_verification[verified_centers]["low_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
 
-        return new_row
+    new_row = (
+        self.name,
+        period,
+        nb_centers,
+        high_risk,
+        mod_risk,
+        low_risk,
+        nb_centers_verified,
+        cost_verification_vbr,
+        cost_verification_syst,
+        subsides_vbr,
+        subsides_syst,
+        cout_total_vbr,
+        cout_total_syst,
+        ratio_verif_costtotal_vbr,
+        ratio_verif_costtotal_syst,
+        nb_centre_vbr_made_money,
+        nb_centre_vbr_lost_money,
+        money_won_by_vbr,
+        money_lost_by_vbr,
+        gain_unverified_centers_for_vbr,
+        gain_verified_centers_for_vbr,
+        num_qual_indicator_high_risk_unverified,
+        num_qual_indicator_high_risk_verified,
+        num_qual_indicator_mod_risk_unverified,
+        num_qual_indicator_mod_risk_verified,
+        num_qual_indicator_low_risk_unverified,
+        num_qual_indicator_low_risk_verified,
+    )
+
+    return new_row
 
 
 class Orgunit:

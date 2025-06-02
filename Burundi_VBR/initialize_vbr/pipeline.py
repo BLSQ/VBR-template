@@ -14,6 +14,9 @@ from openhexa.toolbox.dhis2 import DHIS2
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
+import toolbox
+import config
+
 warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
 
@@ -41,20 +44,22 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     required=True,
     default="202412",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
+@parameter(
+    "model_name", name="Name of the model", type=str, default="add_coc_0602_1040", required=True
+)
 @parameter(
     "window",
     type=int,
     help="Number of months to consider",
     required=True,
-    default=36,
+    default=3,
 )
-@parameter("selection_provinces", type=bool, default=True)
+@parameter("selection_provinces", type=bool, default=False)
 @parameter(
     "clean_data",
     help="If true, weird quantite values will be discarded in the pickle file",
     type=bool,
-    default=True,
+    default=False,
 )
 @parameter("extract", name="Extraire les données", type=bool, default=True)
 def buu_init_vbr(
@@ -79,15 +84,51 @@ def buu_init_vbr(
     packages_hesabu = get_hesabu_package_ids(hesabu_params)
     contract_group_id = get_contract_group_unit_id(hesabu_params)
     packages = fetch_hesabu_package(hesabu, packages_hesabu)
+    adaptaged_packages = adapt_hesabu_packages(packages)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
-    done = get_package_values(dhis, periods, packages, contract_group_id, extract)
+    done = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
     quant_full = prepare_quantity_data(
         done, periods, packages, contracts, hesabu_params, extract, model_name
     )
     quant = clean_quant_data(quant_full, clean_data, model_name)
     qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+
+
+@buu_init_vbr.task
+def adapt_hesabu_packages(packages):
+    """
+    We add the new declared values per payment mode to the hesabu packages.
+
+    Parameters
+    ----------
+    packages: dict
+        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
+
+    Returns
+    -------
+    packages: dict
+        The packages with the new declared values per payment mode.
+    """
+    for package_id in packages:
+        for index, activity in enumerate(packages[package_id]["content"]["activities"]):
+            if "declaree_indiv" in activity["inputMappings"].keys():
+                externalReference = packages[package_id]["content"]["activities"][index][
+                    "inputMappings"
+                ]["declaree_indiv"]["externalReference"].split(".")[0]
+                name = packages[package_id]["content"]["activities"][index]["inputMappings"][
+                    "declaree_indiv"
+                ]["name"]
+
+                for dec, coc in config.category_options_per_dec.items():
+                    packages[package_id]["content"]["activities"][index]["inputMappings"][dec] = {
+                        "externalReference": externalReference,
+                        "name": name,
+                        "categoryOptionCombo": coc,
+                    }
+
+    return packages
 
 
 @buu_init_vbr.task
@@ -139,7 +180,6 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
                         # It has the data for all of the periods.
 
         # We are now dropping the rows where the dec = 0 or NaN.
-        data = data[data["declaree"].notna() & (data["declaree"] != 0)]
         data = data.merge(contracts, on="org_unit_id")
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
@@ -153,12 +193,16 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
+        data["dec"] = data["dec_cam"] + data["dec_fbp"] + data["dec_mfp"]
+        data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
+        data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
+        data = data[data["dec"].notna() & (data["dec"] != 0)]
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
 
-        data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
-        data["subside_sans_verification"] = data["dec"] * data["tarif"]
-        data["subside_avec_verification"] = data["val"] * data["tarif"]
+        data["gain_verif"] = (data["dec_fbp"] - data["val_fbp"]) * data["tarif"]
+        data["subside_sans_verification"] = data["dec_fbp"] * data["tarif"]
+        data["subside_avec_verification"] = data["val_fbp"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
         data.to_csv(
@@ -575,7 +619,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
             if len(org_unit_ids) > 0:
-                data_extraction.fetch_data_values(
+                toolbox.fetch_data_values(
                     dhis,
                     deg_external_reference,
                     org_unit_ids,
