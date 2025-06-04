@@ -9,7 +9,8 @@ def fetch_data_values(
     dhis, deg_external_reference, org_unit_ids, periods, activities, package_id, path
 ):
     """
-    Get the datavalues from DHIS2
+    Get the datavalues from DHIS2.
+    This is a modified version from the one in the package. We take into account the CategoryOptionCombo, if present.
 
     Parameters
     ----------
@@ -22,14 +23,11 @@ def fetch_data_values(
     periods: list
         The periods we are interested in.
     activities: list
-        The activities we are interested in.
+        The activities we are interested in. It might have a CategoryOptionCombo.
     package_id: str
         The ID of the package we are interested in.
     path: str
         The path where the packages are stored.
-    code_coc: dict, optional
-        A dictionary containing the CategoryOptionCombo for some codes.
-        If it is empty or the code is not in the dictionary, we do not demand a CategoryOptionCombo.
     """
     for monthly_period in periods:
         if os.path.exists(f"{path}/{package_id}/{monthly_period}.csv"):
