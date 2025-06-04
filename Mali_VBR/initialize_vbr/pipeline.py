@@ -12,13 +12,15 @@ from openhexa.toolbox.dhis2 import DHIS2
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
+import toolbox
+
 
 @pipeline("initialize_vbr")
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
     help="Connection to DHIS2",
-    default="pbf-burundi",
+    default="pbf-mali",
     required=True,
 )
 @parameter("hesabu_con", type=str, help="Connection to hesabu", default="hesabu", required=True)
@@ -26,7 +28,7 @@ from RBV_package import rbv_environment as rbv
     "program_id",
     type=str,
     help="Program ID for contracts",
-    default="okgPNNENgtD",
+    default="CsA0VjdgNCz",
     required=True,
 )
 @parameter(
@@ -35,17 +37,17 @@ from RBV_package import rbv_environment as rbv
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202406",
+    default="202402",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model_now", required=True)
+@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
     "window",
     type=int,
     help="Number of months to consider",
     required=True,
-    default=24,
+    default=1,
 )
-@parameter("selection_provinces", type=bool, default=True)
+@parameter("selection_provinces", type=bool, default=False)
 @parameter("extract", name="Extraire les données", type=bool, default=True)
 def initialize_vbr(
     dhis_con,
@@ -61,6 +63,8 @@ def initialize_vbr(
 
     We use Hesabu and DHIS2 to obtain information about different health centers.
     We obtain both quantity and quality data, and we store them in the files quantity_data.csv and quality_data.csv.
+
+    NOTE THAT THE QUALITY DATA IS NOT COMPLETED. DO NOT TRUST IT.
     """
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
@@ -69,15 +73,48 @@ def initialize_vbr(
     contract_group_id = get_contract_group_unit_id(hesabu_params)
     packages = fetch_hesabu_package(hesabu, packages_hesabu)
     periods = get_periods(period, window)
-    contracts = fetch_contracts(dhis, program_id)
-    done = get_package_values(dhis, periods, packages, contract_group_id, extract)
-    quant = prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract)
-    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract)
-    save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+    month_quarter_periods = adapt_periods(periods)
+    contracts = fetch_contracts(dhis, program_id, model_name)
+    done = get_package_values(dhis, month_quarter_periods, packages, contract_group_id, extract)
+    quant = prepare_quantity_data(
+        done, month_quarter_periods, packages, contracts, hesabu_params, extract, model_name
+    )
+    save_simulation_environment(quant, hesabu_params, model_name, selection_provinces)
 
 
 @initialize_vbr.task
-def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract):
+def adapt_periods(months):
+    """
+    Construct a dictionary mapping a quarter to its corresponding months.
+    It covers all of the months in the periods list.
+
+    Parameters
+    ----------
+    periods: list
+        The periods to be considered. It contains months.
+
+
+    Returns
+    -------
+    dict:
+        A dictionary mapping each quarter to its corresponding months.
+        The keys are the quarters, and the values are lists of months.
+    """
+    month_quarter_periods = {}
+    for month in months:
+        month_int = int(str(month))
+        quarter = dates.month_to_quarter(month_int)
+        if quarter not in month_quarter_periods.keys():
+            list_months = toolbox.get_monts_in_quarter(quarter)
+            month_quarter_periods[quarter] = list_months
+
+    return month_quarter_periods
+
+
+@initialize_vbr.task
+def prepare_quantity_data(
+    done, month_quarter_periods, packages, contracts, hesabu_params, extract, model_name
+):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -107,6 +144,7 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
     """
     if extract:
         data = pd.DataFrame()
+        periods = list(month_quarter_periods.keys())
         for id in packages:
             if hesabu_params["packages"][str(id)] == "quantite" and os.path.exists(
                 f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
@@ -123,7 +161,6 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
                         # It has the data for all of the periods.
 
         # We are now dropping the rows where the dec = 0 or NaN.
-        data = data[data["declaree"].notna() & (data["declaree"] != 0)]
         data = data.merge(contracts, on="org_unit_id")
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
@@ -137,80 +174,29 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
-        print(data.contract_end_date.unique())
         data.contract_end_date = data.contract_end_date.astype(int)
-        data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
-
-        data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
-        data["subside_sans_verification"] = data["dec"] * data["tarif"]
-        data["subside_avec_verification"] = data["val"] * data["tarif"]
-        data["quarter"] = data["month"].map(dates.month_to_quarter)
-        data = rbv.calcul_ecarts(data)
-        data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data.csv", index=False
-        )
-    else:
-        data = pd.read_csv(f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data.csv")
-    return data
-
-
-@initialize_vbr.task
-def prepare_quality_data(done, periods, packages, hesabu_params, extract):
-    """Create a CSV file with the quality data.
-    (1) We combine all of the data from the packages cvs's that have quality data.
-    (2) We select the columns that we are interested in.
-    (3) We perform some calculations on the data, to have all of the information we will need.
-    (4) We save the data in a CSV file.
-
-    Parameters
-    ----------
-    done: bool
-        Indicates that the process get_package_values has finished.
-    periods: list
-        The periods to be considered.
-    packages: dict
-        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
-    hesabu_params: dict
-        Contains the information we want to extract from Hesabu.
-    extract: bool
-        If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
-
-    Returns
-    -------
-    data: pd.DataFrame
-        A DataFrame containing the quality data.
-    """
-    if extract:
-        data = pd.DataFrame()
-        for id in packages:
-            if hesabu_params["packages"][str(id)] == "qualite" and os.path.exists(
-                f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
-            ):
-                for p in [dates.month_to_quarter(str(p)) for p in periods]:
-                    if os.path.exists(
-                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
-                    ):
-                        df = pd.read_csv(
-                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
-                        )
-                        data = pd.concat([data, df], ignore_index=True)
-        data = data[list(hesabu_params["qualite_attributes"].keys())]
-        data.rename(
-            columns=hesabu_params["qualite_attributes"],
-            inplace=True,
-        )
-        data["score"] = data["num"] / data["denom"]
         data["month"] = data["quarter"].map(dates.quarter_to_months)
+        data = data[(data.contract_end_date >= data.month)]
+        data = data[data["dec"].notna() & (data["dec"] != 0)]
+
+        # data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
+        # data["subside_sans_verification"] = data["dec"] * data["tarif"]
+        # data["subside_avec_verification"] = data["val"] * data["tarif"]
+        # data["quarter"] = data["month"].map(dates.month_to_quarter)
+        data = toolbox.calcul_ecarts(data)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data.csv", index=False
+            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data/quantity_data_{model_name}.csv",
+            index=False,
         )
     else:
-        data = pd.read_csv(f"{workspace.files_path}/pipelines/initialize_vbr/quality_data.csv")
+        data = pd.read_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data/quantity_data_{model_name}.csv"
+        )
     return data
 
 
 @initialize_vbr.task
-def save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces):
+def save_simulation_environment(quant, hesabu_params, model_name, selection_provinces):
     """We save the simulation in a pickle file. We will then access this pickle file in the second pipeline.
 
     Parameters
@@ -233,7 +219,8 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
     """
     regions = []
     orgunits = quant["ou"].unique()
-    quality_indicators = sorted(qual["indicator"].unique())
+    quality_indicators = []
+    qual = pd.DataFrame(columns=["ou", "indicator", "quarter", "month"])
     if (
         selection_provinces
         and "selection_provinces" in hesabu_params
@@ -249,16 +236,7 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
                 temp = quant[(quant.ou == ou) & (quant.level_2_name == province)]
                 # temp has the quantitative information for the province and organizational unit we are interested in.
                 if len(temp) > 0:
-                    group_of_ou.add_ou(
-                        rbv.Orgunit(
-                            ou,
-                            temp,
-                            qual[(qual.ou == ou)],
-                            quality_indicators,
-                            temp.type_ou.values[0]
-                            in hesabu_params["type_ou_verification_systematique"],
-                        )
-                    )
+                    group_of_ou.add_ou(rbv.Orgunit(ou, temp, qual, quality_indicators, False))
                     nb_tot += 1
 
             print(f"Province= {province}. Number of orgunits= {nb_tot}")
@@ -278,10 +256,9 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
                     rbv.Orgunit(
                         ou,
                         temp,
-                        qual[(qual.ou == ou)],
+                        qual,
                         quality_indicators,
-                        temp.type_ou.values[0]
-                        in hesabu_params["type_ou_verification_systematique"],
+                        False,
                     )
                 )
                 nb_tot += 1
@@ -479,17 +456,12 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
         for package_id in hesabu_packages:
             # We iterate over each of the packages we want to extract.
             package = hesabu_packages[package_id]["content"]
-            freq = hesabu_packages[package_id]["freq"]
-            if freq != "monthly":
-                periods_adapted = list({dates.month_to_quarter(str(pe)) for pe in periods})
-                current_run.log_info(f"Adapted periods: {periods_adapted}")
-            else:
-                periods_adapted = periods
             package_name = package["name"]
             deg_external_reference = package["degExternalReference"]
             org_unit_ids = data_extraction.get_org_unit_ids_from_hesabu(
                 contract_group, package, dhis
             )
+            # Note: I am not sure that the contract_group is needed in this case.
             # Here, we input the contract ID, the package that we are interested in and the DHIS2 connection.
             # We output a set of IDs of the organization units that we need to look at.
             org_unit_ids = list(org_unit_ids)
@@ -497,11 +469,11 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
             if len(org_unit_ids) > 0:
-                data_extraction.fetch_data_values(
+                toolbox.fetch_data_values(
                     dhis,
                     deg_external_reference,
                     org_unit_ids,
-                    periods_adapted,
+                    periods,
                     package["activities"],
                     package_id,
                     f"{workspace.files_path}/pipelines/initialize_vbr/packages",
@@ -514,7 +486,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
 
 
 @initialize_vbr.task
-def fetch_contracts(dhis, contract_program_id):
+def fetch_contracts(dhis, contract_program_id, model_name):
     """Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
 
     Parameters
@@ -568,7 +540,10 @@ def fetch_contracts(dhis, contract_program_id):
         records.append(record)
 
     records_df = pd.DataFrame(records)
-    records_df.to_csv(f"{workspace.files_path}/pipelines/initialize_vbr/contracts.csv", index=False)
+    records_df.to_csv(
+        f"{workspace.files_path}/pipelines/initialize_vbr/contracts/contracts_{model_name}.csv",
+        index=False,
+    )
     return records_df
 
 
