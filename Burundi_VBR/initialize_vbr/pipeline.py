@@ -42,17 +42,15 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202412",
+    default="202501",
 )
-@parameter(
-    "model_name", name="Name of the model", type=str, default="add_coc_0602_1040", required=True
-)
+@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
     "window",
     type=int,
     help="Number of months to consider",
     required=True,
-    default=3,
+    default=24,
 )
 @parameter("selection_provinces", type=bool, default=False)
 @parameter(
@@ -193,7 +191,7 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
-        data["dec"] = data["dec_cam"] + data["dec_fbp"] + data["dec_mfp"]
+        data["dec_fbp"] = data["dec"] - data["dec_cam"] - data["dec_mfp"]
         data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
         data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
         data = data[data["dec"].notna() & (data["dec"] != 0)]
