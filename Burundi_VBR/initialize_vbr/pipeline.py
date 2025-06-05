@@ -42,7 +42,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202501",
+    default="202412",
 )
 @parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
@@ -50,14 +50,14 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to consider",
     required=True,
-    default=24,
+    default=23,
 )
 @parameter("selection_provinces", type=bool, default=False)
 @parameter(
     "clean_data",
     help="If true, weird quantite values will be discarded in the pickle file",
     type=bool,
-    default=False,
+    default=True,
 )
 @parameter("extract", name="Extraire les données", type=bool, default=True)
 def buu_init_vbr(
@@ -391,7 +391,15 @@ def clean_quant_data(quant, clean_data, model_name):
         The cleaned quantity data.
     """
     if clean_data:
-        quant, outliers = remove_weirdly_high_validated_values(quant)
+        outliers = pd.DataFrame()
+        quant, outliers = remove_weirdly_high_validated_values(quant, outliers)
+        quant, outliers = remove_null_tarifs(quant, outliers)
+        quant, outliers = remove_fbp_not_predominant(quant, outliers)
+        quant, outliers = remove_negative_values(quant, outliers)
+        per_outliers = 100 * len(outliers) / len(quant)
+        current_run.log_info(
+            f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
+        )
         outliers.to_csv(
             f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/outliers_quantity_data_{model_name}.csv",
             index=False,
@@ -400,7 +408,7 @@ def clean_quant_data(quant, clean_data, model_name):
     return quant
 
 
-def remove_weirdly_high_validated_values(quant):
+def remove_weirdly_high_validated_values(quant, outliers):
     """
     Remove the rows where the validated value is a lot bigger than the declared value.
 
@@ -408,19 +416,103 @@ def remove_weirdly_high_validated_values(quant):
     ----------
     quant: pd.DataFrame
         The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
 
     Returns
     -------
     quant: pd.DataFrame
         The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
     """
     max_difference = -1500
     quant["ratio dec-val"] = 100 * (quant["dec"] - quant["val"]) / quant["ver"]
     ser_less_than_1500 = quant["ratio dec-val"] < max_difference
-    outliers = quant[ser_less_than_1500].sort_values("ratio dec-val")
+    new_outliers = quant[ser_less_than_1500].sort_values("ratio dec-val")
     quant = quant[~ser_less_than_1500]
     quant = quant.drop(columns=["ratio dec-val"])
-    outliers = outliers.drop(columns=["ratio dec-val"])
+    new_outliers = new_outliers.drop(columns=["ratio dec-val"])
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_null_tarifs(quant, outliers):
+    """
+    Remove the rows where the tarif is null.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_null_tarif = quant["tarif"].isna()
+    new_outliers = quant[ser_null_tarif]
+    quant = quant[~ser_null_tarif]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_fbp_not_predominant(quant, outliers, min_percentage=0.95):
+    """
+    Remove the rows where the FBP-declared values is not a big percentage of the total declared values.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    min_percentage: float
+        The minimum percentage of the FBP-declared values compared to the total declared values.
+        Default is 0.95, meaning that the FBP-declared values should be at least 95% of the total declared values.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_fbp_not_predominant = quant["dec_fbp"] / quant["dec"] < min_percentage
+    new_outliers = quant[ser_fbp_not_predominant]
+    quant = quant[~ser_fbp_not_predominant]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_negative_values(quant, outliers):
+    """
+    Remove the rows where the declared/verified/validated values are negative.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    list_cols_to_check = ["dec", "ver", "val", "dec_fbp", "val_fbp", "ver_fbp"]
+    ser_negative_values = quant[list_cols_to_check].lt(0).any(axis=1)
+    new_outliers = quant[ser_negative_values]
+    quant = quant[~ser_negative_values]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
     return quant, outliers
 
 
