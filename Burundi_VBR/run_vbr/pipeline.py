@@ -9,7 +9,9 @@ import pandas as pd
 import os
 from vbr_custom import (
     categorize_quality,
-    categorize_quantity,
+    categorize_quantity_standard,
+    categorize_quantity_gain,
+    define_risky_services,
     get_proportions,
     assign_taux_validation_per_zs,
 )
@@ -29,7 +31,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
-    default="model",
+    default="all",
     type=str,
     required=True,
 )
@@ -47,7 +49,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=6,
+    default=1,
 )
 @parameter(
     "year_start",
@@ -55,7 +57,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de debut de la simulation",
-    default=2023,
+    default=2024,
 )
 @parameter(
     "mois_fin",
@@ -63,7 +65,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=12,
+    default=3,
 )
 @parameter(
     "year_fin",
@@ -136,8 +138,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Paiement des centres non-verifies",
     help="Quelle methode de paiement utilise t'on pour payer les centres non-verifies (complet = payer sur base des quantites declarees; taux de validation personnel/ZS : payer sur base du montant declare multiplie par le taux de validation median personnel/de la ZS sur les precedentes periodes)",
     type=str,
-    choices=["complet", "taux validation personnel", "taux validation moyen ZS"],
-    default="taux validation personnel",
+    choices=["complet", "tauxvalidation", "tauxvalidationZS"],
+    default="tauxvalidation",
 )
 @parameter(
     "use_quality_for_risk",
@@ -152,6 +154,29 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     help="Threshold for the number of services that can have a weighted_ecart_dec_val bigger than seuil_max_moyen_risk without the center being high risk",
     type=int,
     default=0,
+)
+@parameter(
+    "quantity_risk_calculation",
+    name="The calculation method for the risk based on the val/dec/ver data. ",
+    type=str,
+    choices=["standard", "verificationgain"],
+    default="verificationgain",
+)
+@parameter(
+    "verification_gain_low",
+    name="Maximum verification gain for low risk centers",
+    help="Per month",
+    type=int,
+    default=-150000,
+    required=False,
+)
+@parameter(
+    "verification_gain_mod",
+    name="Maximum verification gain for moderate risk centers",
+    help="Per month",
+    type=int,
+    default=-100000,
+    required=False,
 )
 @parameter("folder", name="Folder", type=str, default="Extraction")
 def run_vbr_burundi(
@@ -173,15 +198,18 @@ def run_vbr_burundi(
     use_quality_for_risk,
     folder,
     max_nb_services,
+    quantity_risk_calculation,
+    verification_gain_low,
+    verification_gain_mod,
 ):
     regions = get_environment(nom_init)
     start = get_month(mois_start, year_start)
     end = get_month(mois_fin, year_fin)
 
     path_data = create_folders(folder)
-    path_verif = create_subfolder(path_data, "verification_information")
-    path_stats = create_subfolder(path_data, "simulation_statistics")
-    path_service = create_subfolder(path_data, "service_information")
+    path_verif = create_subfolder(path_data, "verification")
+    path_stats = create_subfolder(path_data, "statistics")
+    path_service = create_subfolder(path_data, "service")
 
     proportions = get_proportions(
         proportion_selection_bas_risque,
@@ -209,6 +237,9 @@ def run_vbr_burundi(
         path_verif,
         proportions,
         max_nb_services,
+        quantity_risk_calculation,
+        verification_gain_low,
+        verification_gain_mod,
     )
 
 
@@ -227,11 +258,7 @@ def create_folders(folder):
     path_data : str
         Path to the folder where we will store the results.
     """
-    dict_paths = {
-        folder: {
-            "data": ["verification_information", "simulation_statistics", "service_information"]
-        }
-    }
+    dict_paths = {folder: {"data": ["verification", "statistics", "service"]}}
 
     os.makedirs(os.path.join(workspace.files_path, "pipelines/run_vbr", folder), exist_ok=True)
 
@@ -313,6 +340,9 @@ def run_simulation(
     path_verif,
     proportions,
     max_nb_services,
+    quantity_risk_calculation,
+    verification_gain_low,
+    verification_gain_mod,
 ):
     """
     Run the simulation.
@@ -401,6 +431,9 @@ def run_simulation(
             month,
             model_name,
             max_nb_services,
+            quantity_risk_calculation,
+            verification_gain_low,
+            verification_gain_mod,
         )
 
         period = set_period(frequence, month)
@@ -424,6 +457,9 @@ def run_simulation(
                 use_quality_for_risk,
                 proportions,
                 max_nb_services,
+                quantity_risk_calculation,
+                verification_gain_low,
+                verification_gain_mod,
             )
             rows.append(new_row)
 
@@ -474,6 +510,9 @@ def create_file_names(
     month,
     model_name,
     max_nb_services,
+    quantity_risk_calculation,
+    verification_gain_low,
+    verification_gain_mod,
 ):
     """
     Create the file names where the results will be stored
@@ -533,13 +572,46 @@ def create_file_names(
         The full path to the .csv that will contain the statistics information.
 
     """
-    file_name_verif = f"model___{model_name}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}-max_high:{max_nb_services}"
-    file_name_verif = file_name_verif.replace(":", "___")
+    file_name_verif = (
+        f"mdl___{model_name}"
+        f"-frq___{frequence}"
+        f"-gvrf___{seuil_gain_verif_median}"
+        f"-obswin___{window}"
+        f"-minnb___{nb_period_verif}"
+        f"-plow___{proportion_selection_bas_risque}"
+        f"-phigh___{proportion_selection_haut_risque}"
+        f"-cvrf___{prix_verif}"
+        f"-seuilm___{seuil_max_moyen_risk}"
+        f"-seuilb___{seuil_max_bas_risk}"
+        f"-pai___{paym_method_nf}"
+        f"-qlrisk___{use_quality_for_risk}"
+        f"-mxs___{max_nb_services}"
+        f"-qtrisk___{quantity_risk_calculation}"
+        f"-vglow___{verification_gain_low}"
+        f"-vgmod___{verification_gain_mod}"
+    )
 
     path_verif_per_group = os.path.join(path_verif, file_name_verif)
 
-    file_name_stats = f"month:{month}-freq:{frequence}-gain_verif:{seuil_gain_verif_median}-obs_win:{window}-min_nb_verif:{nb_period_verif}-p_low:{proportion_selection_bas_risque}-p_high:{proportion_selection_haut_risque}-cout_verif:{prix_verif}-seuil_m:{seuil_max_moyen_risk}-seuil_b:{seuil_max_bas_risk}-pai:{paym_method_nf}-qual_risk:{use_quality_for_risk}-max_high:{max_nb_services}.csv"
-    file_name_stats = file_name_stats.replace(":", "___")
+    file_name_stats = (
+        f"mdl___{month}"
+        f"-frq___{frequence}"
+        f"-gvrf___{seuil_gain_verif_median}"
+        f"-obswin___{window}"
+        f"-minnb___{nb_period_verif}"
+        f"-plow___{proportion_selection_bas_risque}"
+        f"-phigh___{proportion_selection_haut_risque}"
+        f"-cvrf___{prix_verif}"
+        f"-seuilm___{seuil_max_moyen_risk}"
+        f"-seuilb___{seuil_max_bas_risk}"
+        f"-pai___{paym_method_nf}"
+        f"-qlrisk___{use_quality_for_risk}"
+        f"-mxs___{max_nb_services}"
+        f"-qtrisk___{quantity_risk_calculation}"
+        f"-vglow___{verification_gain_low}"
+        f"-vgmod___{verification_gain_mod}"
+        ".csv"
+    )
 
     full_path_stats = os.path.join(path_stats, f"model___{model_name}-{file_name_stats}")
 
@@ -592,6 +664,9 @@ def simulate_month_group(
     use_quality_for_risk,
     proportions,
     max_nb_services,
+    quantity_risk_calculation,
+    verification_gain_low,
+    verification_gain_mod,
 ):
     """
     Run the simulation for a particular month.
@@ -656,6 +731,9 @@ def simulate_month_group(
             seuil_max_moyen_risk,
             use_quality_for_risk,
             max_nb_services,
+            quantity_risk_calculation,
+            verification_gain_low,
+            verification_gain_mod,
         )
 
     full_path_verif = os.path.join(
@@ -708,6 +786,8 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
         ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
     ou.set_window(window)
     ou.get_ecart_median()
+    ou.get_diff_subsidies_decval_median()
+    ou.get_taux_validation_median()
 
 
 def process_ou(
@@ -723,6 +803,9 @@ def process_ou(
     seuil_max_moyen_risk,
     use_quality_for_risk,
     max_nb_services,
+    quantity_risk_calculation,
+    verification_gain_low,
+    verification_gain_mod,
 ):
     """
     Process a particular Organizational Unit.
@@ -763,26 +846,31 @@ def process_ou(
     """
     set_ou_values(ou, frequence, period, nb_period_verif, window)
 
+    if paym_method_nf == "complet":
+        ou.get_gain_verif_for_period_verif(1)
+    elif paym_method_nf == "tauxvalidation":
+        ou.get_gain_verif_for_period_verif(ou.taux_validation)
+    # If the payment method is "tauxvalidationZS" we will process the verification gains at group level.
+
+    ou.define_gain_quantities(group.cout_verification_centre)
+
     if use_quality_for_risk:
         categorize_quality(ou)
 
-    categorize_quantity(
-        ou, seuil_gain_verif_median, seuil_max_bas_risk, seuil_max_moyen_risk, max_nb_services
-    )
+    define_risky_services(ou, seuil_max_bas_risk, seuil_max_moyen_risk)
+
+    if quantity_risk_calculation == "standard":
+        categorize_quantity_standard(ou, seuil_gain_verif_median, max_nb_services)
+    elif quantity_risk_calculation == "verificationgain":
+        categorize_quantity_gain(
+            ou,
+            verification_gain_low,
+            verification_gain_mod,
+        )
 
     ou.mix_risks(use_quality_for_risk)
 
-    ou.get_taux_validation_median()
-
-    if paym_method_nf == "complet":
-        ou.get_gain_verif_for_period_verif(1)
-    elif paym_method_nf == "taux validation personnel":
-        ou.get_gain_verif_for_period_verif(ou.taux_validation)
-    # If the payment method is "taux validation moyen ZS" we will process the verification gains at group level.
-
     ou.set_verification(random.uniform(0, 1) <= group.proportions[ou.risk])
-
-    ou.define_gain_quantities(group.cout_verification_centre)
 
 
 def initialize_group(group, proportions, prix_verif, paym_method_nf):
@@ -804,7 +892,7 @@ def initialize_group(group, proportions, prix_verif, paym_method_nf):
     group.set_proportions(proportions)
     group.set_cout_verification(prix_verif)
 
-    if paym_method_nf == "taux validation moyen ZS":
+    if paym_method_nf == "tauxvalidationZS":
         assign_taux_validation_per_zs(group)
 
 
