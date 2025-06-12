@@ -184,7 +184,7 @@ def categorize_quantity_gain(center, verification_gain_low, verification_gain_mo
         bigger than seuil_max_moyen_risk without the center being high risk
     """
     if eligible_for_vbr(center):
-        dict_threholds = get_thresholds(verification_gain_low, verification_gain_mod)
+        dict_threholds = get_thresholds(-verification_gain_low, -verification_gain_mod)
 
         if pd.isna(center.benefice_vbr):
             center.risk = "high"

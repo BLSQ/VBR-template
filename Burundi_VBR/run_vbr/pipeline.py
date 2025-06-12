@@ -167,7 +167,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Maximum verification gain for low risk centers",
     help="Per month",
     type=int,
-    default=-150000,
+    default=150000,
     required=False,
 )
 @parameter(
@@ -175,7 +175,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Maximum verification gain for moderate risk centers",
     help="Per month",
     type=int,
-    default=-100000,
+    default=100000,
     required=False,
 )
 @parameter("folder", name="Folder", type=str, default="Extraction")
@@ -207,9 +207,9 @@ def run_vbr_burundi(
     end = get_month(mois_fin, year_fin)
 
     path_data = create_folders(folder)
-    path_verif = create_subfolder(path_data, "verification")
-    path_stats = create_subfolder(path_data, "statistics")
-    path_service = create_subfolder(path_data, "service")
+    path_verif = create_subfolder(path_data, "verification_information")
+    path_stats = create_subfolder(path_data, "simulation_statistics")
+    path_service = create_subfolder(path_data, "service_information")
 
     proportions = get_proportions(
         proportion_selection_bas_risque,
@@ -258,7 +258,11 @@ def create_folders(folder):
     path_data : str
         Path to the folder where we will store the results.
     """
-    dict_paths = {folder: {"data": ["verification", "statistics", "service"]}}
+    dict_paths = {
+        folder: {
+            "data": ["verification_information", "simulation_statistics", "service_information"]
+        }
+    }
 
     os.makedirs(os.path.join(workspace.files_path, "pipelines/run_vbr", folder), exist_ok=True)
 
