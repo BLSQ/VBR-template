@@ -102,7 +102,7 @@ def eligible_for_vbr(center, months_since_last_visit=3, min_subside=50):
     """
     if not_enough_visits_in_interval(center):
         return False
-    elif center.risk == "uneligible":
+    elif center.category_centre == "pca":
         return False
     elif not visited_since(center, months_since_last_visit):
         return False
