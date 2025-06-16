@@ -196,10 +196,9 @@ def categorize_quantity_gain(center, verification_gain_low, verification_gain_mo
             center.risk_quantite = "moderate_2"
         elif center.benefice_vbr <= dict_threholds["moderate_3"]:
             center.risk_quantite = "moderate_3"
-        elif center.benefice_vbr <= dict_threholds["high"]:
-            center.risk_quantite = "high"
         else:
-            center.risk_quantite = "unknown"
+            center.risk_quantite = "high"
+
     else:
         center.risk_quantite = "uneligible"
         center.risk = "uneligible"
