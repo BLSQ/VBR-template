@@ -598,7 +598,7 @@ def create_file_names(
     path_verif_per_group = os.path.join(path_verif, file_name_verif)
 
     file_name_stats = (
-        f"mdl___{month}"
+        f"month___{month}"
         f"-frq___{frequence}"
         f"-gvrf___{seuil_gain_verif_median}"
         f"-obswin___{window}"
