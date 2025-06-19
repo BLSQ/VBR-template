@@ -24,10 +24,6 @@ def get_proportions(p_low, p_mod, p_high):
     """
     return {
         "low": p_low,
-        # "moderate_1": (p_high - p_low) / 4 + p_low,
-        # "moderate_2": 2 * (p_high - p_low) / 4 + p_low,
-        # "moderate_3": 3 * (p_high - p_low) / 4 + p_low,
-        # We do not use these categories for RDC
         "moderate": p_mod,
         "high": p_high,
         "uneligible": 1,
@@ -284,19 +280,15 @@ def categorize_quantity(
             center.risk = "high"
         elif center.benefice_vbr < dict_threholds["low"]:
             center.risk_quantite = "low"
-        elif center.benefice_vbr <= dict_threholds["moderate_1"]:
-            center.risk_quantite = "moderate_1"
-        elif center.benefice_vbr <= dict_threholds["moderate_2"]:
-            center.risk_quantite = "moderate_2"
-        elif center.benefice_vbr <= dict_threholds["moderate_3"]:
-            center.risk_quantite = "moderate_3"
+        elif center.benefice_vbr <= dict_threholds["moderate"]:
+            center.risk_quantite = "moderate"
         else:
             center.risk_quantite = "high"
 
 
 def get_thresholds(verification_gain_low, verification_gain_mod):
     """
-    Define a dictionary with the thresholds for the quantity risk categories. (low, moderate_1, moderate_2, moderate_3, high)
+    Define a dictionary with the thresholds for the quantity risk categories. (low, moderate, moderate, moderate, high)
 
     Parameters
     ----------
@@ -312,11 +304,7 @@ def get_thresholds(verification_gain_low, verification_gain_mod):
     """
     dict_threholds = {
         "low": verification_gain_low,
-        "moderate_1": verification_gain_low + (verification_gain_mod - verification_gain_low) / 4,
-        "moderate_2": verification_gain_low
-        + 2 * (verification_gain_mod - verification_gain_low) / 4,
-        "moderate_3": verification_gain_low
-        + 3 * (verification_gain_mod - verification_gain_low) / 4,
+        "moderate": verification_gain_low + (verification_gain_mod - verification_gain_low) / 2,
         "high": verification_gain_mod,
     }
     return dict_threholds
