@@ -232,7 +232,15 @@ def _categorize_quality_risk(center):
         center.risk_quality = "low"
 
 
-def categorize_quantity(center, seuil_gain_median, seuil_max_bas_risk, seuil_max_moyen_risk):
+def categorize_quantity(
+    center,
+    seuil_gain_median,
+    seuil_max_bas_risk,
+    seuil_max_moyen_risk,
+    quantity_risk_calculation,
+    verification_gain_low,
+    verification_gain_mod,
+):
     """
     Categorize the quantity risk of the center.
 
@@ -247,15 +255,22 @@ def categorize_quantity(center, seuil_gain_median, seuil_max_bas_risk, seuil_max
     seuil_max_moyen_risk: float
         Maximum value of the weighted_ecart_dec_val for which the center is considered at medium risk.
     """
-    if eligible_for_vbr(center):
-        center.get_ecart_median()
-        center.get_diff_subsidies_decval_median()
-
+    if (
+        quantity_risk_calculation == "standard"
+        or quantity_risk_calculation == "ecartmedgen"
+        or quantity_risk_calculation == "ecartavggen"
+    ):
         if center.diff_subsidies_decval_median > seuil_gain_median:
             center.risk_gain_median = "high"
         else:
             center.risk_gain_median = "low"
-            score = center.ecart_median
+            if quantity_risk_calculation == "standard":
+                score = center.ecart_median
+            elif quantity_risk_calculation == "ecartmedgen":
+                score = center.ecart_median_gen
+            elif quantity_risk_calculation == "ecartavggen":
+                score = center.ecart_avg_gen
+
             if score > seuil_max_moyen_risk:
                 center.risk_quantite = "high"
             elif score > seuil_max_bas_risk:
@@ -263,12 +278,48 @@ def categorize_quantity(center, seuil_gain_median, seuil_max_bas_risk, seuil_max
             else:
                 center.risk_quantite = "low"
     else:
-        center.risk_quantite = "uneligible"
-        center.ecart_median = pd.NA
-        center.ecart_median_per_service = pd.NA
-        center.diff_subsidies_decval_median = pd.NA
-        center.risk = "uneligible"
-        center.risk_gain_median = "uneligible"
+        dict_threholds = get_thresholds(-verification_gain_low, -verification_gain_mod)
+
+        if pd.isna(center.benefice_vbr):
+            center.risk = "high"
+        elif center.benefice_vbr < dict_threholds["low"]:
+            center.risk_quantite = "low"
+        elif center.benefice_vbr <= dict_threholds["moderate_1"]:
+            center.risk_quantite = "moderate_1"
+        elif center.benefice_vbr <= dict_threholds["moderate_2"]:
+            center.risk_quantite = "moderate_2"
+        elif center.benefice_vbr <= dict_threholds["moderate_3"]:
+            center.risk_quantite = "moderate_3"
+        else:
+            center.risk_quantite = "high"
+
+
+def get_thresholds(verification_gain_low, verification_gain_mod):
+    """
+    Define a dictionary with the thresholds for the quantity risk categories. (low, moderate_1, moderate_2, moderate_3, high)
+
+    Parameters
+    ----------
+    verification_gain_low: float
+        Threshold for the low risk category.
+    verification_gain_mod: float
+        Threshold for the moderate risk categories.
+
+    Returns
+    -------
+    dict
+        Dictionary with the thresholds for the quantity risk categories.
+    """
+    dict_threholds = {
+        "low": verification_gain_low,
+        "moderate_1": verification_gain_low + (verification_gain_mod - verification_gain_low) / 4,
+        "moderate_2": verification_gain_low
+        + 2 * (verification_gain_mod - verification_gain_low) / 4,
+        "moderate_3": verification_gain_low
+        + 3 * (verification_gain_mod - verification_gain_low) / 4,
+        "high": verification_gain_mod,
+    }
+    return dict_threholds
 
 
 def assign_taux_validation_per_zs(group):
