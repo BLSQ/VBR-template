@@ -19,12 +19,17 @@ list_cols_df_verification = [
     "subside_dec_period",
     "subside_val_period",
     "subside_taux_period",
-    "ecart_median",
+    "ecart_median_per_services",
+    "ecart_median_general",
+    "ecart_average_general",
     "categorie_risque",
     "high_risk_quality_indicators",
     "middle_risk_quality_indicators",
     "low_risk_quality_indicators",
+    "nb_services_above_seuil",
+    "nb_services",
 ]
+
 list_cols_df_stats = [
     "province",
     "periode",

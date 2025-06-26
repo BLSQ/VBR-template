@@ -136,7 +136,7 @@ def fetch_data_values(
     dhis, deg_external_reference, org_unit_ids, periods, activities, package_id, path
 ):
     """
-    Get the datavalues from DHIS2
+    Get the datavalues from DHIS2.
 
     Parameters
     ----------
@@ -149,7 +149,7 @@ def fetch_data_values(
     periods: list
         The periods we are interested in.
     activities: list
-        The activities we are interested in.
+        The activities we are interested in. It might have a CategoryOptionCombo.
     package_id: str
         The ID of the package we are interested in.
     path: str
@@ -187,13 +187,24 @@ def fetch_data_values(
                     some_values = False
                     for code in activity.get("inputMappings").keys():
                         input_mapping = activity.get("inputMappings").get(code)
-                        selected_values = [
-                            dv
-                            for dv in data_values
-                            if dv["orgUnit"] == org_unit_id
-                            and str(dv["period"]) == str(monthly_period)
-                            and dv["dataElement"] == input_mapping["externalReference"]
-                        ]
+                        if "categoryOptionCombo" in input_mapping.keys():
+                            selected_values = [
+                                dv
+                                for dv in data_values
+                                if dv["orgUnit"] == org_unit_id
+                                and str(dv["period"]) == str(monthly_period)
+                                and dv["dataElement"] == input_mapping["externalReference"]
+                                and dv["categoryOptionCombo"]
+                                == input_mapping["categoryOptionCombo"]
+                            ]
+                        else:
+                            selected_values = [
+                                dv
+                                for dv in data_values
+                                if dv["orgUnit"] == org_unit_id
+                                and str(dv["period"]) == str(monthly_period)
+                                and dv["dataElement"] == input_mapping["externalReference"]
+                            ]
                         if len(selected_values) > 0:
                             # print(code, monthly_period, org_unit_id, len(selected_values), selected_values[0]["value"] if len(selected_values) >0 else None)
                             try:
