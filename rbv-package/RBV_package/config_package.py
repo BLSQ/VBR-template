@@ -26,7 +26,10 @@ list_cols_df_verification = [
     "high_risk_quality_indicators",
     "middle_risk_quality_indicators",
     "low_risk_quality_indicators",
+    "nb_services_above_seuil",
+    "nb_services",
 ]
+
 list_cols_df_stats = [
     "province",
     "periode",
@@ -61,6 +64,8 @@ list_cols_df_services = [
     "ou_id",
     "Category of the center",
     "bool verified",
+    "Risk category",
     "service",
     "Taux of validation",
+    "Ecart median",
 ]
