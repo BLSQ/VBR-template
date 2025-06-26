@@ -20,7 +20,6 @@ import random
 from RBV_package import dates
 from RBV_package import config_package as config
 
-import toolbox
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -729,7 +728,7 @@ def simulate_month_group(
     full_path_verif = os.path.join(
         f"{path_verif_per_group}-prov___{group.name}-prd___{period}.csv",
     )
-    toolbox.get_verification_information(group)
+    group.get_verification_information()
     df_group_service = group.get_service_information()
     stats = group.get_statistics(period)
 
@@ -775,7 +774,7 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     if pd.api.types.is_numeric_dtype(ou.qualite["month"]):
         ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
     ou.set_window(window)
-    toolbox.get_ecart_median(ou)
+    ou.get_ecart_median()
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
 
