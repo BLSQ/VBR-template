@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
-    default="r",
+    default="model",
     type=str,
     required=True,
 )
@@ -56,7 +56,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de debut de la simulation",
-    default=2024,
+    default=2023,
 )
 @parameter(
     "mois_fin",
@@ -64,7 +64,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=6,
+    default=12,
 )
 @parameter(
     "year_fin",
@@ -93,14 +93,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Seuil maximal pour categorie de risque faible",
     type=float,
     help="Seuil maximal pour categorie de risque faible",
-    default=0.05,
+    default=0.1,
 )
 @parameter(
     "seuil_max_moyen_risk",
     name="Seuil maximal pour categorie de risque modere",
     type=float,
     help="Seuil maximal pour categorie de risque modere",
-    default=0.1,
+    default=0.2,
 )
 @parameter(
     "window",
@@ -159,7 +159,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="The calculation method for the risk based on the val/dec/ver data. ",
     type=str,
     choices=["standard", "ecartmedgen", "ecartavggen", "verifgain"],
-    default="verifgain",
+    default="standard",
 )
 @parameter(
     "verification_gain_low",
