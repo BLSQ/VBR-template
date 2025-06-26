@@ -14,6 +14,9 @@ from openhexa.toolbox.dhis2 import DHIS2
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
+import toolbox
+import config
+
 warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
 
@@ -39,7 +42,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202406",
+    default="202501",
 )
 @parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
@@ -47,9 +50,15 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to consider",
     required=True,
-    default=24,
+    default=25,
 )
-@parameter("selection_provinces", type=bool, default=True)
+@parameter("selection_provinces", type=bool, default=False)
+@parameter(
+    "clean_data",
+    help="If true, weird quantite values will be discarded in the pickle file",
+    type=bool,
+    default=True,
+)
 @parameter("extract", name="Extraire les données", type=bool, default=True)
 def buu_init_vbr(
     dhis_con,
@@ -60,6 +69,7 @@ def buu_init_vbr(
     model_name,
     window,
     selection_provinces,
+    clean_data,
 ):
     """Pipeline to extract the necessary data.
 
@@ -72,14 +82,51 @@ def buu_init_vbr(
     packages_hesabu = get_hesabu_package_ids(hesabu_params)
     contract_group_id = get_contract_group_unit_id(hesabu_params)
     packages = fetch_hesabu_package(hesabu, packages_hesabu)
+    adaptaged_packages = adapt_hesabu_packages(packages)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
-    done = get_package_values(dhis, periods, packages, contract_group_id, extract)
-    quant = prepare_quantity_data(
+    done = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
+    quant_full = prepare_quantity_data(
         done, periods, packages, contracts, hesabu_params, extract, model_name
     )
+    quant = clean_quant_data(quant_full, clean_data, model_name)
     qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+
+
+@buu_init_vbr.task
+def adapt_hesabu_packages(packages):
+    """
+    We add the new declared values per payment mode to the hesabu packages.
+
+    Parameters
+    ----------
+    packages: dict
+        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
+
+    Returns
+    -------
+    packages: dict
+        The packages with the new declared values per payment mode.
+    """
+    for package_id in packages:
+        for index, activity in enumerate(packages[package_id]["content"]["activities"]):
+            if "declaree_indiv" in activity["inputMappings"].keys():
+                externalReference = packages[package_id]["content"]["activities"][index][
+                    "inputMappings"
+                ]["declaree_indiv"]["externalReference"].split(".")[0]
+                name = packages[package_id]["content"]["activities"][index]["inputMappings"][
+                    "declaree_indiv"
+                ]["name"]
+
+                for dec, coc in config.category_options_per_dec.items():
+                    packages[package_id]["content"]["activities"][index]["inputMappings"][dec] = {
+                        "externalReference": externalReference,
+                        "name": name,
+                        "categoryOptionCombo": coc,
+                    }
+
+    return packages
 
 
 @buu_init_vbr.task
@@ -131,7 +178,6 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
                         # It has the data for all of the periods.
 
         # We are now dropping the rows where the dec = 0 or NaN.
-        data = data[data["declaree"].notna() & (data["declaree"] != 0)]
         data = data.merge(contracts, on="org_unit_id")
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
@@ -145,21 +191,25 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
+        data["dec_fbp"] = data["dec"] - data["dec_cam"] - data["dec_mfp"]
+        data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
+        data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
+        data = data[data["dec"].notna() & (data["dec"] != 0)]
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
 
-        data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
-        data["subside_sans_verification"] = data["dec"] * data["tarif"]
-        data["subside_avec_verification"] = data["val"] * data["tarif"]
+        data["gain_verif"] = (data["dec_fbp"] - data["val_fbp"]) * data["tarif"]
+        data["subside_sans_verification"] = data["dec_fbp"] * data["tarif"]
+        data["subside_avec_verification"] = data["val_fbp"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv",
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
             index=False,
         )
     else:
         data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv"
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
         )
     return data
 
@@ -215,12 +265,12 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
         data["score"] = data["num"] / data["denom"]
         data["month_final"] = data["quarter"].map(dates.quarter_to_months)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv",
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
             index=False,
         )
     else:
         data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv"
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
         )
     return data
 
@@ -318,6 +368,152 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
         f"Fichier d'initialisation sauvé: {workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle"
     )
     return regions
+
+
+@buu_init_vbr.task
+def clean_quant_data(quant, clean_data, model_name):
+    """
+    Clean the quantity data. Only if the bool_clean_data is set to True.
+    We remove the rows where the validated value is a lot bigger than the declared value.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    clean_data: bool
+        If True, clean the data. If False, we don't do anything.
+    model_name: str
+        The name of the model. We will use it for the name of the csv file.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    """
+    if clean_data:
+        outliers = pd.DataFrame()
+        quant, outliers = remove_weirdly_high_validated_values(quant, outliers)
+        quant, outliers = remove_null_tarifs(quant, outliers)
+        quant, outliers = remove_fbp_not_predominant(quant, outliers)
+        quant, outliers = remove_negative_values(quant, outliers)
+        per_outliers = 100 * len(outliers) / len(quant)
+        current_run.log_info(
+            f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
+        )
+        outliers.to_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/outliers_quantity_data_{model_name}.csv",
+            index=False,
+        )
+
+    return quant
+
+
+def remove_weirdly_high_validated_values(quant, outliers):
+    """
+    Remove the rows where the validated value is a lot bigger than the declared value.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    max_difference = -1500
+    quant["ratio dec-val"] = 100 * (quant["dec"] - quant["val"]) / quant["ver"]
+    ser_less_than_1500 = quant["ratio dec-val"] < max_difference
+    new_outliers = quant[ser_less_than_1500].sort_values("ratio dec-val")
+    quant = quant[~ser_less_than_1500]
+    quant = quant.drop(columns=["ratio dec-val"])
+    new_outliers = new_outliers.drop(columns=["ratio dec-val"])
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_null_tarifs(quant, outliers):
+    """
+    Remove the rows where the tarif is null.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_null_tarif = quant["tarif"].isna()
+    new_outliers = quant[ser_null_tarif]
+    quant = quant[~ser_null_tarif]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_fbp_not_predominant(quant, outliers, min_percentage=0.95):
+    """
+    Remove the rows where the FBP-declared values is not a big percentage of the total declared values.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    min_percentage: float
+        The minimum percentage of the FBP-declared values compared to the total declared values.
+        Default is 0.95, meaning that the FBP-declared values should be at least 95% of the total declared values.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_fbp_not_predominant = quant["dec_fbp"] / quant["dec"] < min_percentage
+    new_outliers = quant[ser_fbp_not_predominant]
+    quant = quant[~ser_fbp_not_predominant]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_negative_values(quant, outliers):
+    """
+    Remove the rows where the declared/verified/validated values are negative.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    list_cols_to_check = ["dec", "ver", "val", "dec_fbp", "val_fbp", "ver_fbp"]
+    ser_negative_values = quant[list_cols_to_check].lt(0).any(axis=1)
+    new_outliers = quant[ser_negative_values]
+    quant = quant[~ser_negative_values]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
 
 
 @buu_init_vbr.task
@@ -513,7 +709,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
             if len(org_unit_ids) > 0:
-                data_extraction.fetch_data_values(
+                toolbox.fetch_data_values(
                     dhis,
                     deg_external_reference,
                     org_unit_ids,
@@ -587,7 +783,8 @@ def fetch_contracts(dhis, contract_program_id, model_name):
 
     records_df = pd.DataFrame(records)
     records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/contracts_{model_name}.csv", index=False
+        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
+        index=False,
     )
     return records_df
 

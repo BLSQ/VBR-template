@@ -70,203 +70,219 @@ class GroupOrgUnits:
         """
         self.proportions = proportions
 
-    def get_verification_information(self):
-        """
-        Create a pandas dataframe with the information about the center and whether it will be verified or not.
-        """
-        rows = []
-        list_cols_df_verification = config.list_cols_df_verification + self.qualite_indicators
 
-        for ou in self.members:
+def get_verification_information(self):
+    """
+    Create a pandas dataframe with the information about the center and whether it will be verified or not.
+    """
+    rows = []
+    list_cols_df_verification = config.list_cols_df_verification + self.qualite_indicators
+
+    for ou in self.members:
+        new_row = (
+            [ou.period]
+            + [ou.id]
+            + ou.identifier_verification
+            + [ou.is_verified]
+            + [
+                ou.diff_subsidies_decval_median_period,
+                ou.diff_subsidies_tauxval_median_period,
+                ou.benefice_vbr,
+                ou.taux_validation,
+                ou.subside_dec_period,
+                ou.subside_val_period,
+                ou.subside_taux_period,
+                ou.ecart_median,
+                ou.ecart_median_gen,
+                ou.ecart_avg_gen,
+                ou.risk,
+                ou.quality_high_risk,
+                ou.quality_mod_risk,
+                ou.quality_low_risk,
+                ou.nb_services_moyen_risk,
+                ou.nb_services,
+            ]
+            + [ou.indicator_scores.get(i, pd.NA) for i in self.qualite_indicators]
+        )
+        rows.append(new_row)
+
+    self.df_verification = pd.DataFrame(rows, columns=list_cols_df_verification)
+
+
+def get_service_information(self):
+    """
+    Create a DataFrame with the information per service.
+    Note: the method get_gain_verif_for_period_verif has a lot of information per service.
+    If we get the information from there, we can probably create a more complete .csv
+
+    Returns
+    -------
+    df : pd.DataFrame
+        DataFrame with the information per service.
+    """
+    rows = []
+
+    for ou in self.members:
+        list_services = list(ou.quantite_window["service"].unique())
+
+        for service in list_services:
+            taux_validation = ou.quantite_window[ou.quantite_window.service == service][
+                "taux_validation"
+            ].median()
+            if pd.isnull(taux_validation):
+                taux_validation = ou.taux_validation
+
+            if isinstance(ou.ecart_median_per_service, pd.DataFrame):
+                ecart = ou.ecart_median_per_service[
+                    ou.ecart_median_per_service["service"] == service
+                ]["ecart_median"].median()
+
+                if pd.isnull(ecart):
+                    ecart = ou.ecart_median
+
+            else:
+                ecart = pd.NA
+
             new_row = (
-                [ou.period]
-                + [ou.id]
-                + ou.identifier_verification
-                + [ou.is_verified]
-                + [
-                    ou.diff_subsidies_decval_median_period,
-                    ou.diff_subsidies_tauxval_median_period,
-                    ou.benefice_vbr,
-                    ou.taux_validation,
-                    ou.subside_dec_period,
-                    ou.subside_val_period,
-                    ou.subside_taux_period,
-                    ou.ecart_median,
-                    ou.ecart_median_gen,
-                    ou.ecart_avg_gen,
-                    ou.risk,
-                    ou.quality_high_risk,
-                    ou.quality_mod_risk,
-                    ou.quality_low_risk,
-                ]
-                + [ou.indicator_scores.get(i, pd.NA) for i in self.qualite_indicators]
+                ou.period,
+                ou.id,
+                ou.category_centre,
+                hot_encode(not ou.is_verified),
+                ou.risk,
+                service,
+                taux_validation,
+                ecart,
             )
+
             rows.append(new_row)
 
-        self.df_verification = pd.DataFrame(rows, columns=list_cols_df_verification)
+    df = pd.DataFrame(rows, columns=config.list_cols_df_services)
+    return df
 
-    def get_service_information(self):
-        """
-        Create a DataFrame with the information per service.
-        Note: the method get_gain_verif_for_period_verif has a lot of information per service.
-        If we get the information from there, we can probably create a more complete .csv
 
-        Returns
-        -------
-        df : pd.DataFrame
-            DataFrame with the information per service.
-        """
-        rows = []
+def get_statistics(self, period):
+    """
+    Create the statistics for the period and Group of Organizational Units
 
-        for ou in self.members:
-            list_services = list(ou.quantite_window["service"].unique())
+    Parameters
+    ----------
+    period: str
+        The date we are running the simulation for.
 
-            for service in list_services:
-                taux_validation = ou.quantite_window[ou.quantite_window.service == service][
-                    "taux_validation"
-                ].median()
-                if pd.isnull(taux_validation):
-                    taux_validation = ou.taux_validation
+    Returns
+    -------
+    stats: pd.DataFrame
+        The statistics for the period and Group of Organizational Units.
+    """
+    verified_centers = self.df_verification.bool_verified
+    vbr_beneficial = self.df_verification["benefice_complet_vbr"] < 0
 
-                new_row = (
-                    ou.period,
-                    ou.id,
-                    ou.category_centre,
-                    hot_encode(not ou.is_verified),
-                    service,
-                    taux_validation,
-                )
+    nb_centers = len(self.members)
+    nb_centers_verified = self.df_verification[verified_centers].shape[0]
 
-                rows.append(new_row)
+    high_risk = len([ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"])
+    mod_risk = len([ou.id for ou in self.members if "moderate" in ou.risk])
+    low_risk = len([ou.id for ou in self.members if ou.risk == "low"])
 
-        df = pd.DataFrame(rows, columns=config.list_cols_df_services)
-        return df
+    cost_verification_vbr = self.cout_verification_centre * nb_centers_verified
+    cost_verification_syst = self.cout_verification_centre * nb_centers
 
-    def get_statistics(self, period):
-        """
-        Create the statistics for the period and Group of Organizational Units
+    subsides_vbr = (
+        self.df_verification[verified_centers]["subside_val_period"].sum()
+        + self.df_verification[~verified_centers]["subside_taux_period"].sum()
+    )
+    subsides_syst = self.df_verification["subside_val_period"].sum()
 
-        Parameters
-        ----------
-        period: str
-            The date we are running the simulation for.
+    cout_total_vbr = subsides_vbr + cost_verification_vbr
+    cout_total_syst = subsides_syst + cost_verification_syst
 
-        Returns
-        -------
-        stats: pd.DataFrame
-            The statistics for the period and Group of Organizational Units.
-        """
-        verified_centers = self.df_verification.bool_verified
-        vbr_beneficial = self.df_verification["benefice_complet_vbr"] < 0
+    ratio_verif_costtotal_vbr = cost_verification_vbr / cout_total_vbr
+    ratio_verif_costtotal_syst = cost_verification_syst / cout_total_syst
 
-        nb_centers = len(self.members)
-        nb_centers_verified = self.df_verification[verified_centers].shape[0]
+    nb_centre_vbr_made_money = len(
+        self.df_verification[(~verified_centers) & vbr_beneficial]["ou_id"].unique()
+    )
+    nb_centre_vbr_lost_money = len(
+        self.df_verification[(~verified_centers) & (~vbr_beneficial)]["ou_id"].unique()
+    )
 
-        high_risk = len(
-            [ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"]
-        )
-        mod_risk = len([ou.id for ou in self.members if "moderate" in ou.risk])
-        low_risk = len([ou.id for ou in self.members if ou.risk == "low"])
+    money_won_by_vbr = self.df_verification[(~verified_centers) & vbr_beneficial][
+        "benefice_complet_vbr"
+    ].sum()
 
-        cost_verification_vbr = self.cout_verification_centre * nb_centers_verified
-        cost_verification_syst = self.cout_verification_centre * nb_centers
+    money_lost_by_vbr = self.df_verification[(~verified_centers) & (~vbr_beneficial)][
+        "benefice_complet_vbr"
+    ].sum()
 
-        subsides_vbr = (
-            self.df_verification[verified_centers]["subside_val_period"].sum()
-            + self.df_verification[~verified_centers]["subside_taux_period"].sum()
-        )
-        subsides_syst = self.df_verification["subside_val_period"].sum()
+    gain_unverified_centers_for_vbr = self.df_verification[~verified_centers][
+        "diff_in_subsidies_tauxval_period"
+    ].mean()
+    gain_verified_centers_for_vbr = self.df_verification[verified_centers][
+        "diff_in_subsidies_tauxval_period"
+    ].mean()
 
-        cout_total_vbr = subsides_vbr + cost_verification_vbr
-        cout_total_syst = subsides_syst + cost_verification_syst
+    num_qual_indicator_high_risk_unverified = (
+        self.df_verification[~verified_centers]["high_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_high_risk_verified = (
+        self.df_verification[verified_centers]["high_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_mod_risk_unverified = (
+        self.df_verification[~verified_centers]["middle_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_mod_risk_verified = (
+        self.df_verification[verified_centers]["middle_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_low_risk_unverified = (
+        self.df_verification[~verified_centers]["low_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
+    num_qual_indicator_low_risk_verified = (
+        self.df_verification[verified_centers]["low_risk_quality_indicators"]
+        .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
+        .mean()
+    )
 
-        ratio_verif_costtotal_vbr = cost_verification_vbr / cout_total_vbr
-        ratio_verif_costtotal_syst = cost_verification_syst / cout_total_syst
+    new_row = (
+        self.name,
+        period,
+        nb_centers,
+        high_risk,
+        mod_risk,
+        low_risk,
+        nb_centers_verified,
+        cost_verification_vbr,
+        cost_verification_syst,
+        subsides_vbr,
+        subsides_syst,
+        cout_total_vbr,
+        cout_total_syst,
+        ratio_verif_costtotal_vbr,
+        ratio_verif_costtotal_syst,
+        nb_centre_vbr_made_money,
+        nb_centre_vbr_lost_money,
+        money_won_by_vbr,
+        money_lost_by_vbr,
+        gain_unverified_centers_for_vbr,
+        gain_verified_centers_for_vbr,
+        num_qual_indicator_high_risk_unverified,
+        num_qual_indicator_high_risk_verified,
+        num_qual_indicator_mod_risk_unverified,
+        num_qual_indicator_mod_risk_verified,
+        num_qual_indicator_low_risk_unverified,
+        num_qual_indicator_low_risk_verified,
+    )
 
-        nb_centre_vbr_made_money = len(
-            self.df_verification[(~verified_centers) & vbr_beneficial]["ou_id"].unique()
-        )
-        nb_centre_vbr_lost_money = len(
-            self.df_verification[(~verified_centers) & (~vbr_beneficial)]["ou_id"].unique()
-        )
-
-        money_won_by_vbr = self.df_verification[(~verified_centers) & vbr_beneficial][
-            "benefice_complet_vbr"
-        ].sum()
-
-        money_lost_by_vbr = self.df_verification[(~verified_centers) & (~vbr_beneficial)][
-            "benefice_complet_vbr"
-        ].sum()
-
-        gain_unverified_centers_for_vbr = self.df_verification[~verified_centers][
-            "diff_in_subsidies_tauxval_period"
-        ].mean()
-        gain_verified_centers_for_vbr = self.df_verification[verified_centers][
-            "diff_in_subsidies_tauxval_period"
-        ].mean()
-
-        num_qual_indicator_high_risk_unverified = (
-            self.df_verification[~verified_centers]["high_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_high_risk_verified = (
-            self.df_verification[verified_centers]["high_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_mod_risk_unverified = (
-            self.df_verification[~verified_centers]["middle_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_mod_risk_verified = (
-            self.df_verification[verified_centers]["middle_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_low_risk_unverified = (
-            self.df_verification[~verified_centers]["low_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-        num_qual_indicator_low_risk_verified = (
-            self.df_verification[verified_centers]["low_risk_quality_indicators"]
-            .map(lambda x: len(x.split("--")) if isinstance(x, str) and x else 0)
-            .mean()
-        )
-
-        new_row = (
-            self.name,
-            period,
-            nb_centers,
-            high_risk,
-            mod_risk,
-            low_risk,
-            nb_centers_verified,
-            cost_verification_vbr,
-            cost_verification_syst,
-            subsides_vbr,
-            subsides_syst,
-            cout_total_vbr,
-            cout_total_syst,
-            ratio_verif_costtotal_vbr,
-            ratio_verif_costtotal_syst,
-            nb_centre_vbr_made_money,
-            nb_centre_vbr_lost_money,
-            money_won_by_vbr,
-            money_lost_by_vbr,
-            gain_unverified_centers_for_vbr,
-            gain_verified_centers_for_vbr,
-            num_qual_indicator_high_risk_unverified,
-            num_qual_indicator_high_risk_verified,
-            num_qual_indicator_mod_risk_unverified,
-            num_qual_indicator_mod_risk_verified,
-            num_qual_indicator_low_risk_unverified,
-            num_qual_indicator_low_risk_verified,
-        )
-
-        return new_row
+    return new_row
 
 
 class Orgunit:
@@ -328,6 +344,8 @@ class Orgunit:
         Periods in which the Organizational Unit has been verified.
     nb_services_risky: int
         Number of services that are not at low risk.
+    nb_services_moyen_risk: int
+        Number of services whose seuil is under the medium risk threshold.
     period: str
         The date we are running the simulation for.
     period_type: str
@@ -378,11 +396,11 @@ class Orgunit:
         self.id = ou_id
 
         if uneligible_vbr:
-            self.risk = "uneligible"
             self.category_centre = "pca"
         else:
-            self.risk = "unknown"
             self.category_centre = "pma"
+
+        self.risk = "unknown"
 
         self.quantite = quantite
         self.qualite = qualite
@@ -420,6 +438,7 @@ class Orgunit:
 
         self.nb_periods_verified = None
         self.nb_services_risky = None
+        self.nb_services_moyen_risk = None
 
         self.subside_dec_period = None
         self.subside_val_period = None

@@ -3,9 +3,9 @@ from openhexa.sdk import current_run
 from RBV_package import dates
 
 
-def get_proportions(p_low, p_mod, p_high):
+def get_proportions(p_low, p_high):
     """
-    From the probabilities for the low, moderate and high risk centers,
+    From the probabilities for the low and high risk centers,
     we calculate the probabilities for other risk categories.
     (Note that these can be changed depending on the bussiness requirements)
 
@@ -13,8 +13,6 @@ def get_proportions(p_low, p_mod, p_high):
     ----------
     p_low: float
         Probability for a low risk center to be verified
-    p_mod: float
-        Probability for a moderate risk center to be verified
     p_high: float
         Probability for a high risk center to be verified
 
@@ -23,15 +21,16 @@ def get_proportions(p_low, p_mod, p_high):
     dict
         Dictionary with the verification probabilities for each risk category.
     """
-    return {
+    dict_proportions = {
         "low": p_low,
-        "moderate_1": (p_high - p_low) / 4 + p_low,
-        "moderate_2": 2 * (p_high - p_low) / 4 + p_low,
-        "moderate_3": 3 * (p_high - p_low) / 4 + p_low,
-        "moderate": p_mod,
+        "moderate_1": (p_high - p_low) / 3.6 + (p_low - 0.1),
+        "moderate_2": 2 * (p_high - p_low) / 3.6 + (p_low - 0.1),
+        "moderate_3": 3 * (p_high - p_low) / 3.6 + (p_low - 0.1),
         "high": p_high,
         "uneligible": 1,
     }
+    current_run.log_info(f"Proportions: {dict_proportions}")
+    return dict_proportions
 
 
 def not_enough_visits_in_interval(center):
@@ -102,7 +101,7 @@ def eligible_for_vbr(center, months_since_last_visit=3, min_subside=50):
     """
     if not_enough_visits_in_interval(center):
         return False
-    elif center.risk == "uneligible":
+    elif center.category_centre == "pca":
         return False
     elif not visited_since(center, months_since_last_visit):
         return False
@@ -126,9 +125,9 @@ def categorize_quality(center):
     current_run.log_info("Categorizing quality risk is not defined yet!")
 
 
-def categorize_quantity(center, seuil_gain_median, seuil_max_bas_risk, seuil_max_moyen_risk):
+def categorize_quantity_standard(center, seuil_gain_median, max_nb_services):
     """
-    Categorize the quantity risk of the center.
+    Categorize the quantity risk of the center. We use the standard rules defined by the VBR team.
 
     Parameters
     ----------
@@ -140,42 +139,129 @@ def categorize_quantity(center, seuil_gain_median, seuil_max_bas_risk, seuil_max
         Maximum value of the weighted_ecart_dec_val for which the center is considered at low risk.
     seuil_max_moyen_risk: float
         Maximum value of the weighted_ecart_dec_val for which the center is considered at medium risk.
+    max_nb_services: float
+        Threshold for the number of services that can have a weighted_ecart_dec_val
+        bigger than seuil_max_moyen_risk without the center being high risk
     """
     if eligible_for_vbr(center):
-        center.get_ecart_median()
-        center.get_diff_subsidies_decval_median()
-
         if center.diff_subsidies_decval_median > seuil_gain_median:
             center.risk_gain_median = "high"
         else:
             center.risk_gain_median = "low"
 
-        nb_risk_moindre = len(
-            [
-                ecart
-                for ecart in center.ecart_median_per_service.ecart_median.values
-                if ecart >= seuil_max_bas_risk
-            ]
-        )
-        center.nb_services_risky = nb_risk_moindre
-
-        if center.ecart_median_per_service.ecart_median.max() <= seuil_max_bas_risk:
+        if center.nb_services_risky == 0:
             center.risk_quantite = "low"
-        elif center.ecart_median_per_service.ecart_median.max() >= seuil_max_moyen_risk:
+        elif center.nb_services_moyen_risk > max_nb_services:
             center.risk_quantite = "high"
-        elif nb_risk_moindre == 1:
+        elif center.nb_services_risky == 1:
             center.risk_quantite = "moderate_1"
-        elif nb_risk_moindre < 4:
+        elif center.nb_services_risky < 4:
             center.risk_quantite = "moderate_2"
         else:
             center.risk_quantite = "moderate_3"
     else:
         center.risk_quantite = "uneligible"
-        center.ecart_median = pd.NA
-        center.ecart_median_per_service = pd.NA
-        center.diff_subsidies_decval_median = pd.NA
         center.risk = "uneligible"
         center.risk_gain_median = "uneligible"
+
+
+def categorize_quantity_gain(center, verification_gain_low, verification_gain_mod):
+    """
+    Categorize the quantity risk of the center. We use only the gain from verification to determine the risk.
+
+    Parameters
+    ----------
+    center: Orgunit object.
+        Object containing the information from the particular Organizational Unit
+    seuil_gain_median: int
+        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
+    seuil_max_bas_risk: float
+        Maximum value of the weighted_ecart_dec_val for which the center is considered at low risk.
+    seuil_max_moyen_risk: float
+        Maximum value of the weighted_ecart_dec_val for which the center is considered at medium risk.
+    max_nb_services: float
+        Threshold for the number of services that can have a weighted_ecart_dec_val
+        bigger than seuil_max_moyen_risk without the center being high risk
+    """
+    if eligible_for_vbr(center):
+        dict_threholds = get_thresholds(-verification_gain_low, -verification_gain_mod)
+
+        if pd.isna(center.benefice_vbr):
+            center.risk = "high"
+        elif center.benefice_vbr < dict_threholds["low"]:
+            center.risk_quantite = "low"
+        elif center.benefice_vbr <= dict_threholds["moderate_1"]:
+            center.risk_quantite = "moderate_1"
+        elif center.benefice_vbr <= dict_threholds["moderate_2"]:
+            center.risk_quantite = "moderate_2"
+        elif center.benefice_vbr <= dict_threholds["moderate_3"]:
+            center.risk_quantite = "moderate_3"
+        else:
+            center.risk_quantite = "high"
+
+    else:
+        center.risk_quantite = "uneligible"
+        center.risk = "uneligible"
+
+
+def get_thresholds(verification_gain_low, verification_gain_mod):
+    """
+    Define a dictionary with the thresholds for the quantity risk categories. (low, moderate_1, moderate_2, moderate_3, high)
+
+    Parameters
+    ----------
+    verification_gain_low: float
+        Threshold for the low risk category.
+    verification_gain_mod: float
+        Threshold for the moderate risk categories.
+
+    Returns
+    -------
+    dict
+        Dictionary with the thresholds for the quantity risk categories.
+    """
+    dict_threholds = {
+        "low": verification_gain_low,
+        "moderate_1": verification_gain_low + (verification_gain_mod - verification_gain_low) / 4,
+        "moderate_2": verification_gain_low
+        + 2 * (verification_gain_mod - verification_gain_low) / 4,
+        "moderate_3": verification_gain_low
+        + 3 * (verification_gain_mod - verification_gain_low) / 4,
+        "high": verification_gain_mod,
+    }
+    return dict_threholds
+
+
+def define_risky_services(center, seuil_max_bas_risk, seuil_max_moyen_risk):
+    """
+    Define the number of risky services for the center.
+
+    Parameters
+    ----------
+    center: Orgunit object.
+        Object containing the information from the particular Organizational Unit
+    seuil_max_bas_risk: float
+        Maximum value of the weighted_ecart_dec_val for which the service is considered at low risk.
+    seuil_max_moyen_risk: float
+        Maximum value of the weighted_ecart_dec_val for which the service is considered at medium risk.
+    """
+    center.nb_services_risky = len(
+        [
+            ecart
+            for ecart in center.ecart_median_per_service.ecart_median.values
+            if ecart >= seuil_max_bas_risk
+        ]
+    )
+    center.nb_services_moyen_risk = len(
+        [
+            ecart
+            for ecart in center.ecart_median_per_service.ecart_median.values
+            if ecart >= seuil_max_moyen_risk
+        ]
+    )
+    center.nb_services = len(
+        [ecart for ecart in center.ecart_median_per_service.ecart_median.values]
+    )
 
 
 def assign_taux_validation_per_zs(group):
