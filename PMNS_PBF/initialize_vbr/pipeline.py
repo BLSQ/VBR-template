@@ -154,12 +154,12 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv",
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
             index=False,
         )
     else:
         data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quantity_data_{model_name}.csv"
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
         )
     return data
 
@@ -215,12 +215,12 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
         data["score"] = data["num"] / data["denom"]
         data["month_final"] = data["quarter"].map(dates.quarter_to_months)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv",
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
             index=False,
         )
     else:
         data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/quality_data_{model_name}.csv"
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
         )
     return data
 
@@ -587,7 +587,8 @@ def fetch_contracts(dhis, contract_program_id, model_name):
 
     records_df = pd.DataFrame(records)
     records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/contracts_{model_name}.csv", index=False
+        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
+        index=False,
     )
     return records_df
 

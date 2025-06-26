@@ -92,6 +92,8 @@ class GroupOrgUnits:
                     ou.subside_val_period,
                     ou.subside_taux_period,
                     ou.ecart_median,
+                    ou.ecart_median_gen,
+                    ou.ecart_avg_gen,
                     ou.risk,
                     ou.quality_high_risk,
                     ou.quality_mod_risk,
@@ -683,6 +685,8 @@ class Orgunit:
             .rename(columns={"weighted_ecart_dec_val": "ecart_median"})
         )
         self.ecart_median = self.ecart_median_per_service["ecart_median"].median()
+        self.ecart_median_gen = self.quantite_window["weighted_ecart_dec_val"].median()
+        self.ecart_avg_gen = self.quantite_window["weighted_ecart_dec_val"].mean()
 
     def get_taux_validation_median(self):
         """
