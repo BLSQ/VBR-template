@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
-    default="all",
+    default="model",
     type=str,
     required=True,
 )
@@ -57,7 +57,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de debut de la simulation",
-    default=2024,
+    default=2023,
 )
 @parameter(
     "mois_fin",
@@ -65,7 +65,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=3,
+    default=1,
 )
 @parameter(
     "year_fin",
@@ -73,7 +73,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de fin de la simulation",
-    default=2024,
+    default=2025,
 )
 @parameter(
     "prix_verif",
@@ -160,7 +160,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="The calculation method for the risk based on the val/dec/ver data. ",
     type=str,
     choices=["standard", "verificationgain"],
-    default="verificationgain",
+    default="standard",
 )
 @parameter(
     "verification_gain_low",
@@ -585,8 +585,8 @@ def create_file_names(
         f"-plow___{proportion_selection_bas_risque}"
         f"-phigh___{proportion_selection_haut_risque}"
         f"-cvrf___{prix_verif}"
-        f"-seuilm___{seuil_max_moyen_risk}"
-        f"-seuilb___{seuil_max_bas_risk}"
+        f"-seum___{seuil_max_moyen_risk}"
+        f"-seub___{seuil_max_bas_risk}"
         f"-pai___{paym_method_nf}"
         f"-qlrisk___{use_quality_for_risk}"
         f"-mxs___{max_nb_services}"
@@ -606,8 +606,8 @@ def create_file_names(
         f"-plow___{proportion_selection_bas_risque}"
         f"-phigh___{proportion_selection_haut_risque}"
         f"-cvrf___{prix_verif}"
-        f"-seuilm___{seuil_max_moyen_risk}"
-        f"-seuilb___{seuil_max_bas_risk}"
+        f"-seum___{seuil_max_moyen_risk}"
+        f"-seub___{seuil_max_bas_risk}"
         f"-pai___{paym_method_nf}"
         f"-qlrisk___{use_quality_for_risk}"
         f"-mxs___{max_nb_services}"

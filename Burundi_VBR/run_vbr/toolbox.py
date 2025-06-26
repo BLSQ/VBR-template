@@ -78,6 +78,8 @@ def get_verification_information(self):
                 ou.subside_val_period,
                 ou.subside_taux_period,
                 ou.ecart_median,
+                ou.ecart_median_gen,
+                ou.ecart_avg_gen,
                 ou.risk,
                 ou.quality_high_risk,
                 ou.quality_mod_risk,
