@@ -704,6 +704,8 @@ class Orgunit:
             .rename(columns={"weighted_ecart_dec_val": "ecart_median"})
         )
         self.ecart_median = self.ecart_median_per_service["ecart_median"].median()
+        self.ecart_median_gen = self.quantite_window["weighted_ecart_dec_val"].median()
+        self.ecart_avg_gen = self.quantite_window["weighted_ecart_dec_val"].mean()
 
     def get_taux_validation_median(self):
         """
