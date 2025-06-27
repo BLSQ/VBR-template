@@ -14,7 +14,6 @@ from openhexa.toolbox.dhis2 import DHIS2
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
-import toolbox
 import config
 
 warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
@@ -709,7 +708,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
             if len(org_unit_ids) > 0:
-                toolbox.fetch_data_values(
+                data_extraction.fetch_data_values(
                     dhis,
                     deg_external_reference,
                     org_unit_ids,
