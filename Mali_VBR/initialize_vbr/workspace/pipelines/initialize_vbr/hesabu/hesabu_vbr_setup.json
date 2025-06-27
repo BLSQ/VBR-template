@@ -1,0 +1,37 @@
+{
+    "packages": {
+        "1310": "quantite", 
+        "1318": "quantite"
+    },
+    "main_contract_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "quantite_attributes": {
+        "org_unit_id": "ou",
+        "period": "quarter",
+        "activity_name": "service",
+        "declare": "dec",
+        "valide": "val"
+    },
+    "contracts_attributes": {
+        "start_period": "contract_start_date",
+        "end_period": "contract_end_date",
+        "namelevel1": "level_1_name",
+        "namelevel2": "level_2_name",
+        "namelevel3": "level_3_name",
+        "namelevel4": "level_4_name",
+        "namelevel5": "level_5_name",
+        "namelevel6": "level_6_name",
+        "uidlevel1": "level_1_uid",
+        "uidlevel2": "level_2_uid",
+        "uidlevel3": "level_3_uid",
+        "uidlevel4": "level_4_uid",
+        "uidlevel5": "level_5_uid",
+        "uidlevel6": "level_6_uid",
+        "level": "level"
+    },
+    "selection_provinces": [
+        "Kirundo",
+        "Kayanza",
+        "Bururi",
+        "Rumonge"
+    ]
+}
