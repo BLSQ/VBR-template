@@ -438,6 +438,7 @@ class Orgunit:
         self.nb_periods_verified = None
         self.nb_services_risky = None
         self.nb_services_moyen_risk = None
+        self.nb_services = None
 
         self.subside_dec_period = None
         self.subside_val_period = None

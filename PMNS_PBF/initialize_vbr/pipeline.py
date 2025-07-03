@@ -14,6 +14,8 @@ from openhexa.toolbox.dhis2 import DHIS2
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
+import config
+
 warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
 
@@ -39,18 +41,31 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202406",
+    default="202506",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
+@parameter(
+    "model_name",
+    name="Name of the model",
+    type=str,
+    default="model",
+    required=True,
+)
 @parameter(
     "window",
     type=int,
     help="Number of months to consider",
     required=True,
-    default=24,
+    default=12,
 )
 @parameter("selection_provinces", type=bool, default=True)
 @parameter("extract", name="Extraire les données", type=bool, default=True)
+@parameter(
+    "extract_verification",
+    name="Extract is_verified",
+    help="Extract the verification information from DHIS2",
+    type=bool,
+    default=False,
+)
 def buu_init_vbr(
     dhis_con,
     hesabu_con,
@@ -60,6 +75,7 @@ def buu_init_vbr(
     model_name,
     window,
     selection_provinces,
+    extract_verification,
 ):
     """Pipeline to extract the necessary data.
 
@@ -74,16 +90,36 @@ def buu_init_vbr(
     packages = fetch_hesabu_package(hesabu, packages_hesabu)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
-    done = get_package_values(dhis, periods, packages, contract_group_id, extract)
+    done_packages = get_package_values(dhis, periods, packages, contract_group_id, extract)
     quant = prepare_quantity_data(
-        done, periods, packages, contracts, hesabu_params, extract, model_name
+        done_packages,
+        periods,
+        packages,
+        contracts,
+        hesabu_params,
+        extract,
+        model_name,
+        dhis,
+        extract_verification,
     )
-    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
+    qual = prepare_quality_data(
+        done_packages, periods, packages, hesabu_params, extract, model_name
+    )
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
 
 
 @buu_init_vbr.task
-def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract, model_name):
+def prepare_quantity_data(
+    done,
+    periods,
+    packages,
+    contracts,
+    hesabu_params,
+    extract,
+    model_name,
+    dhis,
+    extract_verification,
+):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -148,11 +184,27 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
 
+        if extract_verification:
+            verification_list = []
+            list_periods = data["month"].unique()
+            for period in list_periods:
+                verification_period = get_verification_information(dhis, data, period)
+                verification_list.append(verification_period)
+
+            if len(verification_list) > 0:
+                verification = pd.concat(verification_list, ignore_index=True)
+                data = add_verification_information(data, verification)
+
         data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
         data["subside_sans_verification"] = data["dec"] * data["tarif"]
         data["subside_avec_verification"] = data["val"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
+
+        if extract_verification:
+            mark_strange_verification(data, model_name)
+            data = format_data_for_verified_centers(data)
+
         data.to_csv(
             f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
             index=False,
@@ -161,6 +213,153 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data = pd.read_csv(
             f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
         )
+    return data
+
+
+def mark_strange_verification(data, model):
+    """
+    Save in a CSV weird verification values.
+    (1) The center was not verified, but there are verified or validated values.
+    (2) The verification fields holds something that is not a 0 or a 1.
+    (3) There are centers that for the same period have different verification values.
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        The DataFrame containing the quantity data.
+    model: str
+        The name of the model. We will use it for the name of the csv file.
+    """
+    weird_data = []
+    data_ver_val_not_verified = data[
+        (data["is_verified"] == 1) & ((data["ver"] != 0) | (data["val"] != 0))
+    ]
+    data_incorrect_is_verified_value = data[~data["is_verified"].isin([0, 1])]
+    verification_conflicts = data.groupby(["ou", "month"])["is_verified"].nunique().reset_index()
+    conflicting_groups = verification_conflicts[verification_conflicts["is_verified"] > 1]
+
+    if data_ver_val_not_verified.shape[0] > 0:
+        current_run.log_info(
+            f"There are services that have not been verified but that have verified or validated values: {data_ver_val_not_verified.shape[0]} rows"
+        )
+        weird_data.append(data_ver_val_not_verified)
+    if data_incorrect_is_verified_value.shape[0] > 0:
+        current_run.log_info(
+            f"There are services that have an incorrect value for is_verified: {data_incorrect_is_verified_value.shape[0]} rows"
+        )
+        weird_data.append(data_incorrect_is_verified_value)
+    if conflicting_groups.shape[0] > 0:
+        current_run.log_info(
+            f"There are centers that have 0 and 1 verification for the same period: {conflicting_groups.shape[0]} rows"
+        )
+        weird_data.append(conflicting_groups)
+
+    if len(weird_data) > 0:
+        weird_data_df = pd.concat(weird_data, ignore_index=True)
+        weird_data_df.to_csv(
+            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/strange_verif_{model}.csv",
+            index=False,
+        )
+        current_run.log_info(
+            f"Weird verification data saved in {workspace.files_path}/pipelines/initialize_vbr/data/weird_verification.csv"
+        )
+
+
+def get_verification_information(dhis, data, period):
+    """
+    Extract the is_verified bool from DHIS2.
+
+    Parameters
+    ----------
+    dhis: DHIS2
+        The DHIS2 instance.
+    data: pd.DataFrame
+        The DataFrame containing the quantity data.
+    period: str
+        The relevant period.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the information about the verification of centers.
+        If no information is found, an empty DataFrame is returned.
+    """
+    list_ous = list(data[data["month"] == period]["ou"].unique())
+    period = [str(period)]
+    response = dhis.data_value_sets.get(
+        datasets=config.ds_is_verified,
+        periods=period,
+        org_units=list_ous,
+    )
+    if len(response) == 0:
+        current_run.log_info(f"No information about the center verification for {period}")
+        return pd.DataFrame()
+    else:
+        response = pd.DataFrame(response)
+        reponse_selected = response[
+            (response["categoryOptionCombo"] == config.coc_is_verified)
+            & (response["dataElement"] == config.de_is_verified)
+        ]
+        if len(reponse_selected) == 0:
+            current_run.log_info(
+                f"No information about the center verification for {period} and {config.coc_is_verified}"
+            )
+            return pd.DataFrame()
+        else:
+            current_run.log_info(f"Information about the center verification for {period} found")
+            return reponse_selected
+
+
+def add_verification_information(data, verification):
+    """
+    Add the information about the verification of centers to the data DataFrame.
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        The DataFrame containing the quantity data.
+    verification: pd.DataFrame
+        The DataFrame containing the information about the verification of centers.
+    period: str
+        The relevant period.
+
+    Returns
+    -------
+    data: pd.DataFrame
+        The DataFrame containing the quantity data with the verification information added.
+    """
+    verification["period"] = verification["period"].astype(int)
+    data = data.merge(
+        verification[["orgUnit", "period", "value"]],
+        left_on=["ou", "month"],
+        right_on=["orgUnit", "period"],
+        how="left",
+    )
+    data = data.drop(columns=["orgUnit", "period"])
+    data = data.rename(columns={"value": "is_verified"})
+    data["is_verified"] = data["is_verified"].fillna(0)
+    data["is_verified"] = data["is_verified"].astype(int)
+    # 0 means that the center was verified.
+    return data
+
+
+def format_data_for_verified_centers(data):
+    """
+    For verified centers, we don't want to take into account the data.
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        The DataFrame containing the quantity data.
+
+    Returns
+    -------
+    data: pd.DataFrame
+        The DataFrame containing the quantity data with the verification information formatted.
+    """
+    ser_verified_centers = data["is_verified"] == 1
+    for col in config.null_indicators_verified_centers:
+        data.loc[ser_verified_centers, col] = None
     return data
 
 
