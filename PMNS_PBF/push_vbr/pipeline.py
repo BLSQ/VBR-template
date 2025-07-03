@@ -33,13 +33,20 @@ import config
     multiple=True,
 )
 @parameter(
-    "dry_run",
-    name="Dry Run",
+    "dry_run_taux",
+    name="Dry Run Taux",
     type=bool,
     default=True,
-    help="If False, we will actually push the data to DHIS2",
+    help="If False, we will actually push the taux data to DHIS2",
 )
-def rdc_push_ver(dhis_con, folder, periods, dry_run):
+@parameter(
+    "dry_run_ver",
+    name="Dry Run Verificaiton",
+    type=bool,
+    default=True,
+    help="If False, we will actually push the verification data to DHIS2",
+)
+def rdc_push_ver(dhis_con, folder, periods, dry_run_taux, dry_run_ver):
     """
     Pipeline to push the taux de validation and center validation to DHIS2.
     """
@@ -50,7 +57,7 @@ def rdc_push_ver(dhis_con, folder, periods, dry_run):
     done = check_data(data_with_services)
     data_taux = prepare_taux_for_dhis(data_with_services, done)
     data_ver = prepare_ver_for_dhis(data_with_services, done)
-    summary_taux = push_to_dhis2(dhis, data_taux, data_ver, dry_run)
+    summary_taux = push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver)
 
 
 def get_period_list(period):
@@ -294,8 +301,7 @@ def prepare_ver_for_dhis(data, done):
         A list of dictionaries containing the data to post to DHIS2.
     """
     data["bool verified"] = data["bool verified"].astype(int).astype(str)
-    data["ver_to_post"] = data["bool verified"].apply(flip_binary)
-    # In DHIS2, we have {"Verified": 0, "Non Verified": 1}
+    # We have {"Verified": 0, "Non Verified": 1}
     values_to_post_ver = []
     periods_to_post = data["period"].unique()
     dict_periods = {period: get_period_list(period) for period in periods_to_post}
@@ -330,28 +336,38 @@ def flip_binary(value):
 
 @rdc_push_ver.task
 def push_to_dhis2(
-    dhis, data_taux, data_ver, dry_run, import_strategy="CREATE_AND_UPDATE", max_post=1000
+    dhis,
+    data_taux,
+    data_ver,
+    dry_run_taux,
+    dry_run_ver,
+    import_strategy="CREATE_AND_UPDATE",
+    max_post=1000,
 ):
     """
     Push the data to DHIS2.
     """
-    current_run.log_info(f"Pushing verification data len: {len(data_ver)} to DHIS2.")
+    current_run.log_info(
+        f"Pushing verification data len: {len(data_ver)} to DHIS2. Dry-run: {dry_run_ver}"
+    )
     summary = push_data_elements(
         dhis2_client=dhis,
         data_elements_list=data_ver,
         strategy=import_strategy,
-        dry_run=dry_run,
+        dry_run=dry_run_ver,
         max_post=max_post,
     )
     msg = f"Analytics extracts summary for verification: {summary['import_counts']}"
     current_run.log_info(msg)
 
-    current_run.log_info(f"Pushing taux data len: {len(data_taux)} to DHIS2.")
+    current_run.log_info(
+        f"Pushing taux data len: {len(data_taux)} to DHIS2.Dry-run: {dry_run_taux}"
+    )
     summary = push_data_elements(
         dhis2_client=dhis,
         data_elements_list=data_taux,
         strategy=import_strategy,
-        dry_run=dry_run,
+        dry_run=dry_run_taux,
         max_post=max_post,
     )
     msg = f"Analytics extracts summary for taux: {summary['import_counts']}"
