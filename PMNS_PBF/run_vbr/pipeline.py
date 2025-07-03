@@ -461,6 +461,7 @@ def run_simulation(
                 quantity_risk_calculation,
                 verification_gain_low,
                 verification_gain_mod,
+                model_name,
             )
             rows.append(new_row)
 
@@ -660,6 +661,7 @@ def simulate_month_group(
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
+    model_name,
 ):
     """
     Run the simulation for a particular month.
@@ -699,6 +701,8 @@ def simulate_month_group(
         It is inputed by the user.
     proportions: dict
         Dictionary with the verification probabilities for each risk category.
+    model_name: str
+        Name of the initialization file to load.
 
     Returns
     -------
@@ -738,7 +742,7 @@ def simulate_month_group(
     )
 
     full_path_service = os.path.join(
-        f"{path_service}/prov___{group.name}-prd___{period}-service.csv",
+        f"{path_service}/prov___{group.name}-prd___{period}-model__{model_name}.csv",
     )
     df_group_service.to_csv(
         full_path_service,
@@ -766,6 +770,7 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     window : int
         The minimum number of months we want to consider for the simulation. It is inputed by the user.
     """
+    ou.nb_services = None  # This we should be able to delete once we merge the package.
     ou.set_frequence(frequence)
     ou.set_month_verification(period)
     ou.set_nb_verif_min_per_window(nb_period_verif)
