@@ -306,11 +306,11 @@ def prepare_ver_for_dhis(data, done):
     periods_to_post = data["period"].unique()
     dict_periods = {period: get_period_list(period) for period in periods_to_post}
 
-    data_ver = data[["ou_id", "period", "ver_to_post"]].copy().drop_duplicates()
+    data_ver = data[["ou_id", "period", "bool verified"]].copy().drop_duplicates()
 
     for index, row in data_ver.iterrows():
         orgUnit = row["ou_id"]
-        value = str(row["ver_to_post"])
+        value = str(row["bool verified"])
         for period in dict_periods[row["period"]]:
             values_to_post_ver.append(
                 {
