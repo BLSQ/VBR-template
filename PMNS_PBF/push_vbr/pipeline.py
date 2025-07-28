@@ -23,7 +23,7 @@ import config
     default="pbf-pmns-rdc",
     required=True,
 )
-@parameter("folder", name="Folder", type=str, default="data_to_push")
+@parameter("folder", name="Folder", type=str, default="service_information")
 @parameter(
     "periods",
     name="Periods",
@@ -55,9 +55,9 @@ def rdc_push_ver(dhis_con, folder, periods, dry_run_taux, dry_run_ver):
     services = get_service_codes()
     data_with_services = merge_service_codes(data, services)
     done = check_data(data_with_services)
-    data_taux = prepare_taux_for_dhis(data_with_services, done)
-    data_ver = prepare_ver_for_dhis(data_with_services, done)
-    summary_taux = push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver)
+    data_taux = prepare_taux_for_dhis(data_with_services, done, folder, dry_run_taux)
+    data_ver = prepare_ver_for_dhis(data_with_services, done, folder, dry_run_ver)
+    summary_taux = push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver, folder)
 
 
 def get_period_list(period):
@@ -107,7 +107,7 @@ def get_data(folder, periods):
     current_run.log_info(f"Getting data for periods: {periods} and the folder: {folder}")
     files_ok = []
     files_not_ok = []
-    base_path = f"{workspace.files_path}/pipelines/push_vbr/{folder}/"
+    base_path = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/"
 
     for filename in os.listdir(base_path):
         for period in periods:
@@ -244,7 +244,7 @@ def check_data(data):
 
 
 @rdc_push_ver.task
-def prepare_taux_for_dhis(data, done):
+def prepare_taux_for_dhis(data, done, folder, dry_run):
     """
     Prepare the taux data for DHIS2.
 
@@ -254,6 +254,10 @@ def prepare_taux_for_dhis(data, done):
         The data to prepare.
     done: bool
         Used to stop this task from starting before we have checked the data
+    folder: str
+        The folder where the data is stored.
+    dry_run: bool
+        If True, we will not actually push the data to DHIS2.
 
     Returns
     -------
@@ -280,11 +284,17 @@ def prepare_taux_for_dhis(data, done):
                 }
             )
 
+    output_folder = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/pushed_data"
+    os.makedirs(output_folder, exist_ok=True)
+
+    df_taux = pd.DataFrame(values_to_post_taux)
+    df_taux.to_csv(f"{output_folder}/taux_data_dry_run_{dry_run}.csv", index=False)
+
     return values_to_post_taux
 
 
 @rdc_push_ver.task
-def prepare_ver_for_dhis(data, done):
+def prepare_ver_for_dhis(data, done, folder, dry_run):
     """
     Prepare the center verification data for DHIS2.
 
@@ -294,6 +304,10 @@ def prepare_ver_for_dhis(data, done):
         The data to prepare.
     done: bool
         Used to stop this task from starting before we have checked the data
+    folder: str
+        The folder where the data is stored.
+    dry_run: bool
+        If True, we will not actually push the data to DHIS2.
 
     Returns
     -------
@@ -322,6 +336,12 @@ def prepare_ver_for_dhis(data, done):
                 }
             )
 
+    output_folder = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/pushed_data"
+    os.makedirs(output_folder, exist_ok=True)
+
+    df_ver = pd.DataFrame(values_to_post_ver)
+    df_ver.to_csv(f"{output_folder}/ver_data_dry_run_{dry_run}.csv", index=False)
+
     return values_to_post_ver
 
 
@@ -341,6 +361,7 @@ def push_to_dhis2(
     data_ver,
     dry_run_taux,
     dry_run_ver,
+    folder,
     import_strategy="CREATE_AND_UPDATE",
     max_post=1000,
 ):
@@ -350,28 +371,44 @@ def push_to_dhis2(
     current_run.log_info(
         f"Pushing verification data len: {len(data_ver)} to DHIS2. Dry-run: {dry_run_ver}"
     )
-    summary = push_data_elements(
+    summary_ver = push_data_elements(
         dhis2_client=dhis,
         data_elements_list=data_ver,
         strategy=import_strategy,
         dry_run=dry_run_ver,
         max_post=max_post,
     )
-    msg = f"Analytics extracts summary for verification: {summary['import_counts']}"
+    msg = f"Analytics extracts summary for verification: {summary_ver['import_counts']}"
     current_run.log_info(msg)
 
     current_run.log_info(
         f"Pushing taux data len: {len(data_taux)} to DHIS2.Dry-run: {dry_run_taux}"
     )
-    summary = push_data_elements(
+    summary_taux = push_data_elements(
         dhis2_client=dhis,
         data_elements_list=data_taux,
         strategy=import_strategy,
         dry_run=dry_run_taux,
         max_post=max_post,
     )
-    msg = f"Analytics extracts summary for taux: {summary['import_counts']}"
+    msg = f"Analytics extracts summary for taux: {summary_taux['import_counts']}"
     current_run.log_info(msg)
+
+    summary = pd.DataFrame(
+        [
+            {"type": "summary_ver", "dry_run": dry_run_ver, **summary_ver.get("import_counts", {})},
+            {
+                "type": "summary_taux",
+                "dry_run": dry_run_taux,
+                **summary_taux.get("import_counts", {}),
+            },
+        ]
+    )
+    folder = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/pushed_data"
+    os.makedirs(folder, exist_ok=True)
+    summary.to_csv(f"{folder}/summary_push.csv", index=False)
+
+    return summary
 
 
 def push_data_elements(
