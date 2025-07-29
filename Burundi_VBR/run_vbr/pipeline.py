@@ -9,17 +9,20 @@ import pandas as pd
 import os
 from vbr_custom import (
     categorize_quality,
-    categorize_quantity_standard,
+    categorize_quantity_ecart,
     categorize_quantity_gain,
     define_risky_services,
     get_proportions,
     assign_taux_validation_per_zs,
+    eligible_for_vbr,
 )
 import warnings
 import random
 
 from RBV_package import dates
-from RBV_package import config_package as config
+
+import toolbox
+from config_toolbox import list_cols_df_stats
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -63,7 +66,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=1,
+    default=12,
 )
 @parameter(
     "year_fin",
@@ -71,7 +74,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de fin de la simulation",
-    default=2025,
+    default=2024,
 )
 @parameter(
     "prix_verif",
@@ -157,8 +160,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "quantity_risk_calculation",
     name="The calculation method for the risk based on the val/dec/ver data. ",
     type=str,
-    choices=["standard", "verificationgain"],
-    default="standard",
+    choices=["standard", "verificationgain", "ecartdecver"],
+    default="ecartdecver",
 )
 @parameter(
     "verification_gain_low",
@@ -465,7 +468,7 @@ def run_simulation(
             )
             rows.append(new_row)
 
-        df_stats = pd.DataFrame(rows, columns=config.list_cols_df_stats)
+        df_stats = pd.DataFrame(rows, columns=list_cols_df_stats)
 
         df_stats.to_csv(full_path_stats, index=False)
 
@@ -741,9 +744,9 @@ def simulate_month_group(
     full_path_verif = os.path.join(
         f"{path_verif_per_group}-prov___{group.name}-prd___{period}.csv",
     )
-    group.get_verification_information()
+    toolbox.get_verification_information(group)
     df_group_service = group.get_service_information()
-    stats = group.get_statistics(period)
+    stats = toolbox.get_statistics(group, period)
 
     group.df_verification.to_csv(
         full_path_verif,
@@ -787,7 +790,7 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     if pd.api.types.is_numeric_dtype(ou.qualite["month"]):
         ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
     ou.set_window(window)
-    ou.get_ecart_median()
+    toolbox.get_ecart_median(ou)
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
 
@@ -861,14 +864,35 @@ def process_ou(
 
     define_risky_services(ou, seuil_max_bas_risk, seuil_max_moyen_risk)
 
-    if quantity_risk_calculation == "standard":
-        categorize_quantity_standard(ou, seuil_gain_verif_median, max_nb_services)
-    elif quantity_risk_calculation == "verificationgain":
-        categorize_quantity_gain(
+    if eligible_for_vbr(ou):
+        ou.risk_weighted_ecart = categorize_quantity_ecart(
+            max_nb_services,
+            ou.nb_services_moyen_risk,
+            ou.nb_services_risky,
+        )
+        ou.risk_ecart_dec_ver = categorize_quantity_ecart(
+            max_nb_services,
+            ou.nb_services_moyen_risk_dec_ver,
+            ou.nb_services_risky_dec_ver,
+        )
+        ou.risk_gain_verif = categorize_quantity_gain(
             ou,
             verification_gain_low,
             verification_gain_mod,
         )
+        if quantity_risk_calculation == "standard":
+            ou.risk_quantite = ou.risk_weighted_ecart
+        elif quantity_risk_calculation == "ecartdecver":
+            ou.risk_quantite = ou.risk_ecart_dec_ver
+        elif quantity_risk_calculation == "verificationgain":
+            ou.risk_quantite = ou.risk_gain_verif
+
+    else:
+        ou.risk_quantite = "uneligible"
+        ou.risk = "uneligible"
+        ou.risk_weighted_ecart = "uneligible"
+        ou.risk_ecart_dec_ver = "uneligible"
+        ou.risk_gain_verif = "uneligible"
 
     ou.mix_risks(use_quality_for_risk)
 
