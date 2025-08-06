@@ -1,0 +1,11 @@
+connections:
+  mali_dhis2:
+    type: dhis2
+    url: http://fbr.sante.gov.ml:8081/
+    username: ${MALI_DHIS2_USERNAME}
+    password: ${MALI_DHIS2_PASSWORD}
+  hesabu:
+    type: custom
+    url: https://orbf2.bluesquare.org/api/sets
+    token: ${HESABU_TOKEN}
+    user_id: ${HESABU_USER_ID}
