@@ -8,4 +8,7 @@ connections:
     type: custom
     url: https://orbf2.bluesquare.org/api/sets
     token: ${HESABU_TOKEN}
-    user_id: ${HESABU_USER_ID}
+    dhis2_user_id: ${HESABU_USER_ID}
+  
+files:
+  path: ./workspace
