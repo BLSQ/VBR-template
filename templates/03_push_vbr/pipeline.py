@@ -62,12 +62,13 @@ def push_vbr(dhis_con, folder, periods, dry_run_taux, dry_run_ver):
 
 def get_period_list(period):
     """
-    From a period in the format YYYYQX, get a list of periods in the format YYYYMM.
+    From a period in the format YYYYQX / YYYYMM, get a list of periods in the format YYYYMM.
+    (if the format is already YYYYMM we just put it in a list and return it)
 
     Parameters
     ----------
     period: str
-        A period in the format YYYYQX
+        A period in the format YYYYQX / YYYYMM
 
     Returns
     -------
@@ -75,13 +76,15 @@ def get_period_list(period):
         List of periods in the format YYYYMM.
     """
     list_periods = []
+    if "Q" in str(period):
+        year = period[:4]
+        quarter = int(period[5])
+        for month in range(quarter * 3 - 2, quarter * 3 + 1):
+            list_periods.append(f"{year}{month:02d}")
+            current_run.log_info(f"List of periods: {list_periods}")
+    else:
+        list_periods.append(period)
 
-    year = period[:4]
-    quarter = int(period[5])
-    for month in range(quarter * 3 - 2, quarter * 3 + 1):
-        list_periods.append(f"{year}{month:02d}")
-
-    current_run.log_info(f"List of periods: {list_periods}")
     return list_periods
 
 
@@ -135,7 +138,7 @@ def get_data(folder, periods):
         return df
     else:
         current_run.log_error("No data found for the specified periods.")
-        return None
+        raise ValueError("No data found for the specified periods.")
 
 
 @push_vbr.task
@@ -219,7 +222,7 @@ def check_data(data):
     bool
         True if the data is valid, False otherwise.
     """
-    inconsistent_ous = data.groupby("ou_id")["bool verified"].nunique()
+    inconsistent_ous = data.groupby(["ou_id", "period"])["bool verified"].nunique()
     inconsistent_ous = inconsistent_ous[inconsistent_ous > 1]
     if inconsistent_ous.any():
         current_run.log_warning(f"There are incosistent ous: {inconsistent_ous.index.tolist()}")
