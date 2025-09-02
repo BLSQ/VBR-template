@@ -41,7 +41,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202501",
+    default="202510",
 )
 @parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
@@ -49,7 +49,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to consider",
     required=True,
-    default=25,
+    default=40,
 )
 @parameter("selection_provinces", type=bool, default=False)
 @parameter(
@@ -77,10 +77,11 @@ def buu_init_vbr(
     """
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
+    hesabu_token = get_hesabu_token(dhis)
     hesabu_params = get_hesabu_vbr_setup()
     packages_hesabu = get_hesabu_package_ids(hesabu_params)
     contract_group_id = get_contract_group_unit_id(hesabu_params)
-    packages = fetch_hesabu_package(hesabu, packages_hesabu)
+    packages = fetch_hesabu_package(hesabu, packages_hesabu, hesabu_token)
     adaptaged_packages = adapt_hesabu_packages(packages)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
@@ -91,6 +92,25 @@ def buu_init_vbr(
     quant = clean_quant_data(quant_full, clean_data, model_name)
     qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+
+
+@buu_init_vbr.task
+def get_hesabu_token(dhis: DHIS2) -> str:
+    """
+    Retrieve the hesabu token from the DHIS2 instance
+
+    Returns
+    -------
+    str
+        The hesabu token.
+    """
+    try:
+        endpoint = "dataStore/hesabu/hesabu"
+        response = dhis.api.get(endpoint=endpoint)
+        return response["token"]
+    except Exception as e:
+        current_run.log_error(f"Error retrieving hesabu token from the DHIS2 instance: {e}")
+        raise ValueError(f"Error retrieving hesabu token from the DHIS2 instance: {e}")
 
 
 @buu_init_vbr.task
@@ -202,8 +222,11 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data["subside_avec_verification"] = data["val_fbp"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
+        output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
+        os.makedirs(output_dir, exist_ok=True)
+
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
+            f"{output_dir}/quantity_data_{model_name}.csv",
             index=False,
         )
     else:
@@ -263,8 +286,11 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
         )
         data["score"] = data["num"] / data["denom"]
         data["month_final"] = data["quarter"].map(dates.quarter_to_months)
+        output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data"
+        os.makedirs(output_dir, exist_ok=True)
+
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
+            f"{output_dir}/quality_data_{model_name}.csv",
             index=False,
         )
     else:
@@ -399,8 +425,11 @@ def clean_quant_data(quant, clean_data, model_name):
         current_run.log_info(
             f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
         )
+        output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
+        os.makedirs(output_dir, exist_ok=True)
+
         outliers.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/outliers_quantity_data_{model_name}.csv",
+            f"{output_dir}/outliers_quantity_data_{model_name}.csv",
             index=False,
         )
 
@@ -598,7 +627,7 @@ def get_hesabu(con_hesabu):
 
 
 @buu_init_vbr.task
-def fetch_hesabu_package(con_hesabu, package_ids):
+def fetch_hesabu_package(con_hesabu, package_ids, hesabu_token):
     """Using the Hesabu connection, get the codes for the information that we need from each of the packages.
     You have a list of package IDs. They correspond to the different informations that we are going to want to extract from DHIS2.
     These packages contain different informations. We go into the Hesabu page to get the codes/names/etc of those informations.
@@ -609,6 +638,8 @@ def fetch_hesabu_package(con_hesabu, package_ids):
         Connection to the Hesabu instance.
     package_ids: list
         The IDs of the informations that we want to extract from DHIS2.
+    hesabu_token: str
+        The token to connect to Hesabu with
 
     Returns
     -------
@@ -620,7 +651,7 @@ def fetch_hesabu_package(con_hesabu, package_ids):
         "Accept": "application/vnd.api+json;version=2",
         "Accept-Language": "en-US",
         "Accept-Encoding": "gzip, deflate, br, zstd",
-        "X-Token": con_hesabu.token,
+        "X-Token": hesabu_token,
         "X-Dhis2UserId": con_hesabu.dhis2_user_id,
     }
     hesabu_packages = {}
@@ -781,8 +812,10 @@ def fetch_contracts(dhis, contract_program_id, model_name):
         records.append(record)
 
     records_df = pd.DataFrame(records)
+    output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts"
+    os.makedirs(output_dir, exist_ok=True)
     records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
+        f"{output_dir}/contracts_{model_name}.csv",
         index=False,
     )
     return records_df
