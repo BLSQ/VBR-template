@@ -49,7 +49,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to consider",
     required=True,
-    default=40,
+    default=42,
 )
 @parameter("selection_provinces", type=bool, default=False)
 @parameter(
@@ -197,10 +197,23 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
                         # It has the data for all of the periods.
 
         # We are now dropping the rows where the dec = 0 or NaN.
+        # The data for Burundi is a bit strange:
+        # Some services have the declaree = NaN or 0, and the declaree_indiv filled
+        # Some rows have the declaree_indiv = NaN or 0, and the declaree filled.
+        # We want to take both into account
         data = data.merge(contracts, on="org_unit_id")
+        data["provenance_dec"] = "declaree"
+        if "declaree_indiv" in data.columns:
+            ser_dec_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
+            ser_dec_indiv_not_nan_0 = data["declaree_indiv"].notna() & (data["declaree_indiv"] != 0)
+            # For these cases we do a replacement
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "declaree"] = data["declaree_indiv"]
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "provenance_dec"] = "declaree_indiv"
+
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
+            + ["provenance_dec"]
         ]
         data.rename(
             columns=hesabu_params["contracts_attributes"],
