@@ -41,7 +41,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202510",
+    default="202501",
 )
 @parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
@@ -49,7 +49,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to consider",
     required=True,
-    default=42,
+    default=25,
 )
 @parameter("selection_provinces", type=bool, default=False)
 @parameter(
@@ -85,13 +85,63 @@ def buu_init_vbr(
     adaptaged_packages = adapt_hesabu_packages(packages)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
-    done = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
+    ou_list = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
+    verification = get_actual_verification(dhis, periods, ou_list)
     quant_full = prepare_quantity_data(
-        done, periods, packages, contracts, hesabu_params, extract, model_name
+        ou_list, periods, packages, contracts, hesabu_params, extract, model_name, verification
     )
     quant = clean_quant_data(quant_full, clean_data, model_name)
-    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
+    qual = prepare_quality_data(ou_list, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+
+
+@buu_init_vbr.task
+def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.DataFrame:
+    """
+    Get the verification information from DHIS2 for the relevant org units and the relevant periods
+
+    Returns
+    ------
+    pd.DataFrame:
+        Contains a row per OU and period, with information about the verification
+        (false for verified, true for not verified)
+        If the OU and period are missing, the center was verified
+    """
+    current_run.log_info(
+        "Fetching the verification information for the relevant org units and periods..."
+    )
+    param_pe = "".join([f"&period={pe}" for pe in periods])
+    chunks = {}
+    nb_org_unit_treated = 0
+    verification_rows = []
+
+    for i in range(1, len(ou_list) + 1):
+        chunks.setdefault(i // 10, []).append(ou_list[i - 1])
+
+    for i, chunk in chunks.items():
+        param_ou = "".join([f"&orgUnit={ou}" for ou in chunk])
+        url = f"dataValueSets.json?dataSet={config.verification_ds}{param_ou}{param_pe}"
+        res = dhis.api.get(url)
+
+        for dv in res.get("dataValues", []):
+            if dv["dataElement"] == config.verification_de:
+                verification_rows.append(
+                    {
+                        "org_unit_id": dv["orgUnit"],
+                        "period": dv["period"],
+                        "dhis2_is_not_verified": dv["value"],
+                    }
+                )
+
+        nb_org_unit_treated += 10
+        if nb_org_unit_treated % 1000 == 0:
+            current_run.log_info(
+                f"I have fetched the verification information for {nb_org_unit_treated} orgUnits"
+            )
+
+    verification = pd.DataFrame(verification_rows)
+    verification["period"] = pd.to_numeric(verification["period"], errors="raise")
+    return verification
 
 
 @buu_init_vbr.task
@@ -149,7 +199,9 @@ def adapt_hesabu_packages(packages):
 
 
 @buu_init_vbr.task
-def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract, model_name):
+def prepare_quantity_data(
+    done, periods, packages, contracts, hesabu_params, extract, model_name, verification
+):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -159,7 +211,7 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
 
     Parameters
     ----------
-    done: bool
+    done: list
         Indicates that the process get_package_values has finished.
     periods: list
         The periods to be considered.
@@ -173,6 +225,8 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
     model_name: str
         The name of the model. We will use it for the name of the csv file.
+    verification: df
+        It has the information on whether the centers have been verified or not.
 
     Returns
     -------
@@ -202,6 +256,7 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         # Some rows have the declaree_indiv = NaN or 0, and the declaree filled.
         # We want to take both into account
         data = data.merge(contracts, on="org_unit_id")
+        data = data.merge(verification, on=["org_unit_id", "period"], how="left")
         data["provenance_dec"] = "declaree"
         if "declaree_indiv" in data.columns:
             ser_dec_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
@@ -213,8 +268,9 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
-            + ["provenance_dec"]
+            + ["provenance_dec", "dhis2_is_not_verified"]
         ]
+        data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(False)
         data.rename(
             columns=hesabu_params["contracts_attributes"],
             inplace=True,
@@ -259,8 +315,8 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
 
     Parameters
     ----------
-    done: bool
-        Indicates that the process get_package_values has finished.
+    done: list
+        TIndicates that the process get_package_values has finished.
     periods: list
         The periods to be considered.
     packages: dict
@@ -727,9 +783,10 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
 
     Returns
     -------
-    bool:
-        We indicate that the process has finished.
+    full_list_ous:
+        A list with all of the organizational Units we need to extract data for.
     """
+    full_list_ous = []
     if extract:
         for package_id in hesabu_packages:
             # We iterate over each of the packages we want to extract.
@@ -748,6 +805,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
             # Here, we input the contract ID, the package that we are interested in and the DHIS2 connection.
             # We output a set of IDs of the organization units that we need to look at.
             org_unit_ids = list(org_unit_ids)
+            full_list_ous.extend(org_unit_ids)
             current_run.log_info(
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
@@ -764,8 +822,16 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 # Here, we input the DHIS2 connection, the degree of external reference, the list of IDs of the organization units,
                 # the periods we are interested in, the activities we are interested in and the package ID.
                 # We output a CSV file for each of the packages and each of the periods.
-
-    return True
+    else:
+        # We only need the organizational units
+        for package_id in hesabu_packages:
+            package = hesabu_packages[package_id]["content"]
+            org_unit_ids = data_extraction.get_org_unit_ids_from_hesabu(
+                contract_group, package, dhis
+            )
+            org_unit_ids = list(org_unit_ids)
+            full_list_ous.extend(org_unit_ids)
+    return full_list_ous
 
 
 @buu_init_vbr.task

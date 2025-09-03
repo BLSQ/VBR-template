@@ -31,6 +31,7 @@ def get_verification_information(self):
             ou.risk_gain_verif,
             ou.risk,
             ou.is_verified,
+            ou.dhis2_is_not_verified,
         ]
         rows.append(new_row)
 
@@ -78,6 +79,9 @@ def get_statistics(self, period):
 
     nb_centers = len(self.members)
     nb_centers_verified = self.df_verification[verified_centers].shape[0]
+    nb_centers_not_verified_dhis2 = self.df_verification[
+        self.df_verification.bool_not_verified_dhis2
+    ].shape[0]
 
     high_risk = len([ou.id for ou in self.members if ou.risk == "high" or ou.risk == "uneligible"])
     mod_risk = len([ou.id for ou in self.members if "moderate" in ou.risk])
@@ -128,6 +132,7 @@ def get_statistics(self, period):
         mod_risk,
         low_risk,
         nb_centers_verified,
+        nb_centers_not_verified_dhis2,
         cost_verification_vbr,
         cost_verification_syst,
         subsides_vbr,

@@ -28,6 +28,7 @@ list_cols_df_verification = [
     "categorie_risque_gain_verification",
     "categorie_risque",
     "bool_verified",
+    "bool_not_verified_dhis2",
 ]
 
 list_cols_df_stats = [
@@ -38,6 +39,7 @@ list_cols_df_stats = [
     "number of centers middle risk",
     "number of centers low risk",
     "number of verified centers",
+    "number of non verified centers (information DHIS2)",
     "cost of verification (VBR)",
     "cost of verification (syst)",
     "subsidies (VBR)",

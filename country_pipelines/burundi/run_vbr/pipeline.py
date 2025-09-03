@@ -58,7 +58,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de debut de la simulation",
-    default=2023,
+    default=2024,
 )
 @parameter(
     "mois_fin",
@@ -793,6 +793,8 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     toolbox.get_ecart_median(ou)
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
+    quantite_month = ou.quantite_window[ou.quantite_window.month == ou.period]
+    ou.dhis2_is_not_verified = quantite_month.dhis2_is_not_verified.any()
 
 
 def process_ou(
