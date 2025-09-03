@@ -54,7 +54,7 @@ def not_enough_visits_in_interval(center):
         ~pd.isnull(center.quantite_window.val)
     ].month.unique()
     periods_not_verified_dhis2 = center.quantite_window[
-        center.quantite_window["dhis2_is_not_verified"]
+        center.quantite_window["dhis2_is_not_verified"].astype(bool)
     ].month.unique()
     center.nb_periods_verified = [
         period for period in center.nb_periods_verified if period not in periods_not_verified_dhis2

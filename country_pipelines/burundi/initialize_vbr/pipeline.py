@@ -141,6 +141,10 @@ def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.Dat
 
     verification = pd.DataFrame(verification_rows)
     verification["period"] = pd.to_numeric(verification["period"], errors="raise")
+    verification["dhis2_is_not_verified"] = verification["dhis2_is_not_verified"].map(
+        {"true": True, "false": False}
+    )
+
     return verification
 
 
