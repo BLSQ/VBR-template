@@ -310,7 +310,8 @@ def process_verification_info(df):
         [
             "nb_centers",
             "nb_centers_verified",
-            "nb_centers_not_verified_dhis2#_scores_risque_faible",
+            "nb_centers_not_verified_dhis2",
+            "#_scores_risque_faible",
             "#_scores_risque_mod1",
             "#_scores_risque_mod2",
             "#_scores_risque_mod3",
