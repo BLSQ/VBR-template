@@ -27,11 +27,11 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     default="pbf-burundi",
     required=True,
 )
-@parameter("hesabu_con", type=str, help="Connection to hesabu", default="hesabu", required=True)
+@parameter("hesabu_con", type=str, help="Connection to Hesabu", default="hesabu", required=True)
 @parameter(
     "program_id",
     type=str,
-    help="Program ID for contracts",
+    help="DHIS2 program ID for the VBR contracts",
     default="okgPNNENgtD",
     required=True,
 )
@@ -39,26 +39,37 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     "period",
     name="period",
     type=str,
-    help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
+    help="End month of the extraction (YYYYMM)",
     required=True,
     default="202501",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
     "window",
     type=int,
-    help="Number of months to consider",
+    help="Number of months to extract",
     required=True,
     default=25,
 )
-@parameter("selection_provinces", type=bool, default=False)
+@parameter(
+    "model_name",
+    name="Name of the output initialization file",
+    type=str,
+    default="model",
+    required=True,
+)
+@parameter(
+    "selection_provinces",
+    name="Save only some provinces in the output simulation file",
+    type=bool,
+    default=False,
+)
 @parameter(
     "clean_data",
-    help="If true, weird quantite values will be discarded in the pickle file",
+    help="Clean the data of the output simulation file",
     type=bool,
     default=True,
 )
-@parameter("extract", name="Extraire les données", type=bool, default=True)
+@parameter("extract", name="Extract all of the data", type=bool, default=True)
 def buu_init_vbr(
     dhis_con,
     hesabu_con,
@@ -261,18 +272,20 @@ def prepare_quantity_data(
         # We want to take both into account
         data = data.merge(contracts, on="org_unit_id")
         data = data.merge(verification, on=["org_unit_id", "period"], how="left")
-        data["provenance_dec"] = "declaree"
+        data["provenance_data"] = "declaree"
         if "declaree_indiv" in data.columns:
             ser_dec_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
             ser_dec_indiv_not_nan_0 = data["declaree_indiv"].notna() & (data["declaree_indiv"] != 0)
             # For these cases we do a replacement
             data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "declaree"] = data["declaree_indiv"]
-            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "provenance_dec"] = "declaree_indiv"
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "validee"] = data["validee_indiv"]
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "verifiee"] = data["verifiee_indiv"]
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "provenance_data"] = "declaree_indiv"
 
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
-            + ["provenance_dec", "dhis2_is_not_verified"]
+            + ["provenance_data", "dhis2_is_not_verified"]
         ]
         data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(False)
         data.rename(

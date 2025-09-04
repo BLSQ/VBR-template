@@ -38,28 +38,28 @@ import config
 )
 @parameter(
     "suivi_risques_db",
-    name="Name of the DB Suivi des risques",
+    name="Name of the quantity risks file",
     default="Suivi des risques act",
     type=str,
     required=True,
 )
 @parameter(
-    "list_verification_db",
-    name="Name of the DB List de vérification",
+    "verification_db",
+    name="Name of the reduced verification list file",
     default="VBR_liste_verification",
     type=str,
     required=True,
 )
 @parameter(
-    "verif_information_db",
-    name="Name of the DB Vérification des informations",
+    "detailed_information_db",
+    name="Name of the detailed verification information file",
     default="VBR_verification_information",
     type=str,
     required=True,
 )
 @parameter(
     "simul_stats_db",
-    name="Name of the DB Statistiques de simulation",
+    name="Name of the simulation statistics file",
     default="VBR_simulation_statistics",
     type=str,
     required=True,
@@ -68,23 +68,106 @@ def compile_results(
     extraction_folder: str,
     save_db: bool,
     suivi_risques_db: str,
-    list_verification_db: str,
-    verif_information_db: str,
+    verification_db: str,
+    detailed_information_db: str,
     simul_stats_db: str,
 ):
     """
     Compile the results from all of the simulations in a single file and database.
     """
-    input_output, output_path, quant_path, parents_path = define_paths(
-        extraction_folder, verif_information_db, simul_stats_db
+    data_path, output_path, quant_path, parents_path = define_paths(
+        extraction_folder,
     )
-    for input_path, output_name in input_output.items():
-        concatenate_simulation_results(
-            input_path, output_path, output_name, save_db, list_verification_db
-        )
-
     parents = json.load(open(parents_path))
+
+    create_simulation_statistics_file(data_path, output_path, simul_stats_db, save_db)
+    create_verification_file(
+        data_path, output_path, verification_db, detailed_information_db, save_db
+    )
     create_suivi_des_risques(quant_path, output_path, save_db, parents, suivi_risques_db)
+
+
+def create_verification_file(
+    data_path: str,
+    output_path: str,
+    verification_db: str,
+    detailed_information_db: str,
+    save_db: bool,
+):
+    """
+    Creat the simulation statistics file and, if needed, the DB.
+    """
+    input_files = data_path + "verification_information/"
+    output_path_list = output_path + f"{verification_db}.csv"
+    output_path_detailed = output_path + f"{detailed_information_db}.csv"
+    list_dfs = []
+    list_detailed_dfs = []
+
+    for f in listdir(input_files):
+        if valid_simulation_name(f):
+            new_detailed_df = get_parameters(f).merge(get_statistics(input_files, f), on="name")
+            new_df = process_verification_info(new_detailed_df)
+            list_dfs.append(new_df)
+            list_detailed_dfs.append(new_detailed_df)
+        else:
+            current_run.log_warning(f"The file {f} does not correspond to a valid simulation.")
+
+    df_detailed = pd.concat(list_detailed_dfs, ignore_index=True)
+    df_list = pd.concat(list_dfs, ignore_index=True)
+
+    df_list.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
+    df_list = df_list.sort_values(["province", "periode"]).drop("name", axis=1)
+    df_detailed.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
+    df_detailed = df_detailed.sort_values(["province", "periode"]).drop("name", axis=1)
+
+    df_detailed["date"] = df_detailed["periode"].map(str_to_date)
+    df_detailed["bool_verified"] = df_detailed["bool_verified"].astype(int)
+
+    df_list.to_csv(output_path_list, index=False)
+    current_run.log_info(f"For the {verification_db}, the columns are: {df_list.columns}")
+
+    df_detailed.to_csv(output_path_detailed, index=False)
+    current_run.log_info(
+        f"For the {detailed_information_db}, the columns are: {df_detailed.columns}"
+    )
+
+    if save_db:
+        engine = create_engine(environ["WORKSPACE_DATABASE_URL"])
+        df_list.to_sql(verification_db, con=engine, if_exists="replace")
+        current_run.log_info(f"Saved the {verification_db} in the database.")
+        df_detailed.to_sql(detailed_information_db, con=engine, if_exists="replace")
+        current_run.log_info(f"Saved the {detailed_information_db} in the database.")
+
+
+def create_simulation_statistics_file(
+    data_path: str, output_path: str, simul_stats_db: str, save_db: bool
+):
+    """
+    Creat the simulation statistics file and, if needed, the DB.
+    """
+    input_files = data_path + "simulation_statistics/"
+    output_path = output_path + f"{simul_stats_db}.csv"
+    list_dfs = []
+
+    for f in listdir(input_files):
+        if valid_simulation_name(f):
+            new_df = get_parameters(f).merge(get_statistics(input_files, f), on="name")
+            list_dfs.append(new_df)
+        else:
+            current_run.log_warning(f"The file {f} does not correspond to a valid simulation.")
+
+    df_iteration = pd.concat(list_dfs, ignore_index=True)
+    df_iteration.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
+    df_iteration = df_iteration.sort_values(["province", "periode"]).drop("name", axis=1)
+    df_iteration["gain_vbr"] = df_iteration["total cost (syst)"] - df_iteration["total cost (VBR)"]
+
+    df_iteration.to_csv(output_path, index=False)
+    current_run.log_info(f"For the {simul_stats_db}, the columns are: {df_iteration.columns}")
+
+    if save_db:
+        engine = create_engine(environ["WORKSPACE_DATABASE_URL"])
+        df_iteration.to_sql(simul_stats_db, con=engine, if_exists="replace")
+        current_run.log_info(f"Saved the {simul_stats_db} in the database.")
 
 
 def add_parents(df, parents):
@@ -144,90 +227,7 @@ def create_suivi_des_risques(
     results.to_csv(f"{output_path}/VBR_suivi_des_risques.csv", index=False)
 
 
-def change_file_names(input_files: str) -> dict[str, str]:
-    """
-    We have changed the naming of the files multiple times.
-    So, we create a mapping of old names to new names.
-
-    Returns
-    ------
-    dict[str,str]
-        It maps the old names to the new names
-    """
-    dict_files = {}
-    for f in listdir(input_files):
-        if isfile(join(input_files, f)):
-            new_name = f
-            for old, new in config.dict_replaces.items():
-                new_name = new_name.replace(old, new)
-            if valid_simulation_name(new_name):
-                dict_files[f] = new_name
-            else:
-                current_run.log_warning(f"File {f} is not a valid simulation name.")
-
-    return dict_files
-
-
-def concatenate_simulation_results(
-    input_files: str, output_path: str, output_name: str, save_db: bool, list_verification_db: str
-):
-    """
-    Create the output CSV files / databases from the processed data.
-
-    We create a DataFrame for the iteration results and another for the detailed verification results.
-    """
-    df_iteration = pd.DataFrame()  # Here we will store the concatenated information
-    df_detailed = pd.DataFrame()  # Here we will store the detailed verification information.
-    # We will only store data coming from the verification_information files.verification_information
-
-    dict_files = change_file_names(input_files)
-
-    for old_name, new_name in dict_files.items():
-        new_df = get_parameters(new_name, old_name).merge(
-            get_statistics(input_files, old_name), on="name"
-        )
-
-        if "verification_information" in input_files:
-            df_detailed = pd.concat(
-                [df_detailed, new_df], ignore_index=True
-            )  # We process the detailed information
-            new_df = process_verification_info(new_df)  # We need to do some extra processing
-
-        df_iteration = pd.concat([df_iteration, new_df], ignore_index=True)
-
-    # Clean and save the csv that concatenates the information in the input files.
-    df_iteration.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
-    df_iteration = df_iteration.sort_values(["province", "periode"]).drop("name", axis=1)
-
-    if "simulation_statistics" in input_files:
-        df_iteration["gain_vbr"] = (
-            df_iteration["total cost (syst)"] - df_iteration["total cost (VBR)"]
-        )
-
-    if save_db:
-        engine = create_engine(environ["WORKSPACE_DATABASE_URL"])
-        df_iteration.to_sql(output_name, con=engine, if_exists="replace")
-        current_run.log_info(f"Saved the {output_name} in the database.")
-
-    df_iteration.to_csv(f"{output_path}/{output_name}.csv", index=False)
-    current_run.log_info(f"For the {output_name}, the columns are: {df_iteration.columns}")
-
-    # For the verification_information file, we also save the information in a detailed way.
-    if "verification_information" in input_files:
-        df_detailed["bool_verified"] = df_detailed["bool_verified"].astype(int)
-        df_detailed.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
-        df_detailed["date"] = df_detailed["periode"].map(str_to_date)
-        df_detailed = df_detailed.sort_values(["province", "periode"]).drop("name", axis=1)
-        current_run.log_info(
-            f"For the VBR_liste_verification, the columns are: {df_detailed.columns}"
-        )
-        df_detailed.to_csv(f"{output_path}/VBR_liste_verification.csv", index=False)
-        if save_db:
-            df_detailed.to_sql(list_verification_db, con=engine, if_exists="replace")
-            current_run.log_info(f"Saved the {list_verification_db} in the database.")
-
-
-def define_paths(extraction_folder: str, verif_information_db: str, simul_stats_db: str):
+def define_paths(extraction_folder: str):
     """
     Define the paths where we will extract the data from / save it in.
 
@@ -240,24 +240,19 @@ def define_paths(extraction_folder: str, verif_information_db: str, simul_stats_
     output_path = f"{workspace.files_path}/pipelines/run_vbr/{extraction_folder}/compiled_data/"
     Path(output_path).mkdir(parents=True, exist_ok=True)
     quant_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/"
-    input_output = {
-        os.path.join(data_path, "verification_information"): verif_information_db,
-        os.path.join(data_path, "simulation_statistics"): simul_stats_db,
-    }
     parents_path = f"{workspace.files_path}/pipelines/run_vbr/config/orgunits.json"
 
-    return input_output, output_path, quant_path, parents_path
+    return data_path, output_path, quant_path, parents_path
 
 
 def valid_simulation_name(filename):
     return all(substring in filename for substring, _ in config.dict_params.items())
 
 
-def get_parameters(f, old_name):
+def get_parameters(f):
     dict_params_full = deepcopy(config.dict_params)
-
-    dict_params_full.update(config.extra_params)
     list_file_params = f.split("-")
+
     for p in dict_params_full:
         for p_match in list_file_params:
             if p in p_match:
@@ -266,7 +261,7 @@ def get_parameters(f, old_name):
         else:
             dict_params_full[p] = [None]
 
-    dict_params_full["name"] = [old_name]
+    dict_params_full["name"] = [f]
 
     return pd.DataFrame.from_dict(dict_params_full)
 
@@ -279,6 +274,7 @@ def get_statistics(mypath, f):
 
 def process_verification_info(df):
     df["nb_centers_verified"] = df["bool_verified"].map(lambda x: 1 if x else 0)
+    df["nb_centers_not_verified_dhis2"] = df["bool_not_verified_dhis2"].map(lambda x: 1 if x else 0)
     df["nb_centers"] = 1
 
     df["#_scores_risque_eleve"] = df["categorie_risque"].map(
@@ -291,30 +287,30 @@ def process_verification_info(df):
     df = df.groupby(
         [
             "period",
-            "mdl",
+            "model",
+            "frq",
+            "obswin",
+            "minnb",
             "phigh",
             "plow",
-            "minnb",
-            "obswin",
-            "gvrf",
-            "pai",
-            "name",
-            "level_2_name",
-            "level_3_name",
-            "mxs",
             "cvrf",
-            "seuilb",
-            "seuilm",
+            "seub",
+            "seum",
+            "pai",
+            "mxs",
             "qtrisk",
             "vglow",
             "vgmod",
+            "name",
+            "level_2_name",
+            "level_3_name",
         ],
         as_index=False,
     )[
         [
             "nb_centers",
             "nb_centers_verified",
-            "#_scores_risque_faible",
+            "nb_centers_not_verified_dhis2#_scores_risque_faible",
             "#_scores_risque_mod1",
             "#_scores_risque_mod2",
             "#_scores_risque_mod3",
