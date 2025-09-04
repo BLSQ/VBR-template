@@ -217,14 +217,14 @@ def create_suivi_des_risques(
 
     results = add_parents(quant, parents)
 
-    current_run.log_info(f"For the Suivi des risques, the columns are: {results.columns}")
+    current_run.log_info(f"For the {db_name}, the columns are: {results.columns}")
 
     if save_db:
         engine = create_engine(environ["WORKSPACE_DATABASE_URL"])
         results.to_sql(db_name, con=engine, if_exists="replace")
         current_run.log_info(f"Saved the {db_name} in the database.")
 
-    results.to_csv(f"{output_path}/VBR_suivi_des_risques.csv", index=False)
+    results.to_csv(f"{output_path}/{db_name}.csv", index=False)
 
 
 def define_paths(extraction_folder: str):

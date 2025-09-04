@@ -41,7 +41,7 @@ import config
 )
 @parameter(
     "dry_run_ver",
-    name="Dry Run Verificaiton",
+    name="Dry Run Verification",
     type=bool,
     default=True,
     help="If False, we will actually push the verification data to DHIS2",
