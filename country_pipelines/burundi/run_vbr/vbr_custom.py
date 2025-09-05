@@ -47,9 +47,19 @@ def not_enough_visits_in_interval(center):
     bool
         True if there are not enough visits in the interval, False otherwise.
     """
+    if center.quantite_window.empty:
+        return True
+
     center.nb_periods_verified = center.quantite_window[
         ~pd.isnull(center.quantite_window.val)
     ].month.unique()
+    periods_not_verified_dhis2 = center.quantite_window[
+        center.quantite_window["dhis2_is_not_verified"].astype(bool)
+    ].month.unique()
+    center.nb_periods_verified = [
+        period for period in center.nb_periods_verified if period not in periods_not_verified_dhis2
+    ]
+
     return len(center.nb_periods_verified) < center.nb_periods
 
 
@@ -125,44 +135,35 @@ def categorize_quality(center):
     current_run.log_info("Categorizing quality risk is not defined yet!")
 
 
-def categorize_quantity_standard(center, seuil_gain_median, max_nb_services):
+def categorize_quantity_ecart(max_nb_services, nb_services_moyen_risk, nb_services_risky):
     """
-    Categorize the quantity risk of the center. We use the standard rules defined by the VBR team.
+    Categorize the quantity risk of the center. We use the number of services that are above a certain threshold.
 
     Parameters
     ----------
-    center: Orgunit object.
-        Object containing the information from the particular Organizational Unit
-    seuil_gain_median: int
-        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
-    seuil_max_bas_risk: float
-        Maximum value of the weighted_ecart_dec_val for which the center is considered at low risk.
-    seuil_max_moyen_risk: float
-        Maximum value of the weighted_ecart_dec_val for which the center is considered at medium risk.
-    max_nb_services: float
-        Threshold for the number of services that can have a weighted_ecart_dec_val
-        bigger than seuil_max_moyen_risk without the center being high risk
-    """
-    if eligible_for_vbr(center):
-        if center.diff_subsidies_decval_median > seuil_gain_median:
-            center.risk_gain_median = "high"
-        else:
-            center.risk_gain_median = "low"
+    max_nb_services: int
+        Maximum number of services that can be at medium risk.
+    nb_services_moyen_risk: int
+        Number of services that are at medium risk.
+    nb_services_risky: int
+        Number of services that are at high risk.
 
-        if center.nb_services_risky == 0:
-            center.risk_quantite = "low"
-        elif center.nb_services_moyen_risk > max_nb_services:
-            center.risk_quantite = "high"
-        elif center.nb_services_risky == 1:
-            center.risk_quantite = "moderate_1"
-        elif center.nb_services_risky < 4:
-            center.risk_quantite = "moderate_2"
-        else:
-            center.risk_quantite = "moderate_3"
+    Returns
+    -------
+    str
+        The risk category of the center based on the number of services that are above a certain threshold.
+        Possible values: "low", "moderate_1", "moderate_2", "moderate_3", "high".
+    """
+    if nb_services_risky == 0:
+        return "low"
+    elif nb_services_moyen_risk > max_nb_services:
+        return "high"
+    elif nb_services_risky == 1:
+        return "moderate_1"
+    elif nb_services_risky < 4:
+        return "moderate_2"
     else:
-        center.risk_quantite = "uneligible"
-        center.risk = "uneligible"
-        center.risk_gain_median = "uneligible"
+        return "moderate_3"
 
 
 def categorize_quantity_gain(center, verification_gain_low, verification_gain_mod):
@@ -173,35 +174,31 @@ def categorize_quantity_gain(center, verification_gain_low, verification_gain_mo
     ----------
     center: Orgunit object.
         Object containing the information from the particular Organizational Unit
-    seuil_gain_median: int
-        Median verification gain from which the center is considered at high risk (euros). It is inputed by the user.
-    seuil_max_bas_risk: float
-        Maximum value of the weighted_ecart_dec_val for which the center is considered at low risk.
-    seuil_max_moyen_risk: float
-        Maximum value of the weighted_ecart_dec_val for which the center is considered at medium risk.
-    max_nb_services: float
-        Threshold for the number of services that can have a weighted_ecart_dec_val
-        bigger than seuil_max_moyen_risk without the center being high risk
+    verification_gain_low: float
+        Threshold for the low risk category.
+    verification_gain_mod: float
+        Threshold for the moderate risk categories.
+
+    Returns
+    -------
+    str
+        The risk category of the center based on the verification gain.
+        Possible values: "low", "moderate_1", "moderate_2", "moderate_3", "high".
     """
-    if eligible_for_vbr(center):
-        dict_threholds = get_thresholds(-verification_gain_low, -verification_gain_mod)
+    dict_threholds = get_thresholds(-verification_gain_low, -verification_gain_mod)
 
-        if pd.isna(center.benefice_vbr):
-            center.risk = "high"
-        elif center.benefice_vbr < dict_threholds["low"]:
-            center.risk_quantite = "low"
-        elif center.benefice_vbr <= dict_threholds["moderate_1"]:
-            center.risk_quantite = "moderate_1"
-        elif center.benefice_vbr <= dict_threholds["moderate_2"]:
-            center.risk_quantite = "moderate_2"
-        elif center.benefice_vbr <= dict_threholds["moderate_3"]:
-            center.risk_quantite = "moderate_3"
-        else:
-            center.risk_quantite = "high"
-
+    if pd.isna(center.benefice_vbr):
+        return "high"
+    elif center.benefice_vbr < dict_threholds["low"]:
+        return "low"
+    elif center.benefice_vbr <= dict_threholds["moderate_1"]:
+        return "moderate_1"
+    elif center.benefice_vbr <= dict_threholds["moderate_2"]:
+        return "moderate_2"
+    elif center.benefice_vbr <= dict_threholds["moderate_3"]:
+        return "moderate_3"
     else:
-        center.risk_quantite = "uneligible"
-        center.risk = "uneligible"
+        return "high"
 
 
 def get_thresholds(verification_gain_low, verification_gain_mod):
@@ -261,6 +258,20 @@ def define_risky_services(center, seuil_max_bas_risk, seuil_max_moyen_risk):
     )
     center.nb_services = len(
         [ecart for ecart in center.ecart_median_per_service.ecart_median.values]
+    )
+    center.nb_services_risky_dec_ver = len(
+        [
+            ecart
+            for ecart in center.ecart_median_per_service.ecart_median_dec_ver.values
+            if ecart >= seuil_max_bas_risk
+        ]
+    )
+    center.nb_services_moyen_risk_dec_ver = len(
+        [
+            ecart
+            for ecart in center.ecart_median_per_service.ecart_median_dec_ver.values
+            if ecart >= seuil_max_moyen_risk
+        ]
     )
 
 

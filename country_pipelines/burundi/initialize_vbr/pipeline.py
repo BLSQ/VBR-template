@@ -27,11 +27,11 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     default="pbf-burundi",
     required=True,
 )
-@parameter("hesabu_con", type=str, help="Connection to hesabu", default="hesabu", required=True)
+@parameter("hesabu_con", type=str, help="Connection to Hesabu", default="hesabu", required=True)
 @parameter(
     "program_id",
     type=str,
-    help="Program ID for contracts",
+    help="DHIS2 program ID for the VBR contracts",
     default="okgPNNENgtD",
     required=True,
 )
@@ -39,26 +39,37 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     "period",
     name="period",
     type=str,
-    help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
+    help="End month of the extraction (YYYYMM)",
     required=True,
     default="202501",
 )
-@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
 @parameter(
     "window",
     type=int,
-    help="Number of months to consider",
+    help="Number of months to extract",
     required=True,
     default=25,
 )
-@parameter("selection_provinces", type=bool, default=False)
+@parameter(
+    "model_name",
+    name="Name of the output initialization file",
+    type=str,
+    default="model",
+    required=True,
+)
+@parameter(
+    "selection_provinces",
+    name="Save only some provinces in the output simulation file",
+    type=bool,
+    default=False,
+)
 @parameter(
     "clean_data",
-    help="If true, weird quantite values will be discarded in the pickle file",
+    help="Clean the data of the output simulation file",
     type=bool,
     default=True,
 )
-@parameter("extract", name="Extraire les données", type=bool, default=True)
+@parameter("extract", name="Extract all of the data", type=bool, default=True)
 def buu_init_vbr(
     dhis_con,
     hesabu_con,
@@ -77,20 +88,94 @@ def buu_init_vbr(
     """
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
+    hesabu_token = get_hesabu_token(dhis)
     hesabu_params = get_hesabu_vbr_setup()
     packages_hesabu = get_hesabu_package_ids(hesabu_params)
     contract_group_id = get_contract_group_unit_id(hesabu_params)
-    packages = fetch_hesabu_package(hesabu, packages_hesabu)
+    packages = fetch_hesabu_package(hesabu, packages_hesabu, hesabu_token)
     adaptaged_packages = adapt_hesabu_packages(packages)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
-    done = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
+    ou_list = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
+    verification = get_actual_verification(dhis, periods, ou_list)
     quant_full = prepare_quantity_data(
-        done, periods, packages, contracts, hesabu_params, extract, model_name
+        ou_list, periods, packages, contracts, hesabu_params, extract, model_name, verification
     )
     quant = clean_quant_data(quant_full, clean_data, model_name)
-    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
+    qual = prepare_quality_data(ou_list, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+
+
+@buu_init_vbr.task
+def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.DataFrame:
+    """
+    Get the verification information from DHIS2 for the relevant org units and the relevant periods
+
+    Returns
+    ------
+    pd.DataFrame:
+        Contains a row per OU and period, with information about the verification
+        (false for verified, true for not verified)
+        If the OU and period are missing, the center was verified
+    """
+    current_run.log_info(
+        "Fetching the verification information for the relevant org units and periods..."
+    )
+    param_pe = "".join([f"&period={pe}" for pe in periods])
+    chunks = {}
+    nb_org_unit_treated = 0
+    verification_rows = []
+
+    for i in range(1, len(ou_list) + 1):
+        chunks.setdefault(i // 10, []).append(ou_list[i - 1])
+
+    for i, chunk in chunks.items():
+        param_ou = "".join([f"&orgUnit={ou}" for ou in chunk])
+        url = f"dataValueSets.json?dataSet={config.verification_ds}{param_ou}{param_pe}"
+        res = dhis.api.get(url)
+
+        for dv in res.get("dataValues", []):
+            if dv["dataElement"] == config.verification_de:
+                verification_rows.append(
+                    {
+                        "org_unit_id": dv["orgUnit"],
+                        "period": dv["period"],
+                        "dhis2_is_not_verified": dv["value"],
+                    }
+                )
+
+        nb_org_unit_treated += 10
+        if nb_org_unit_treated % 1000 == 0:
+            current_run.log_info(
+                f"I have fetched the verification information for {nb_org_unit_treated} orgUnits"
+            )
+
+    verification = pd.DataFrame(verification_rows)
+    verification["period"] = pd.to_numeric(verification["period"], errors="raise")
+    verification["dhis2_is_not_verified"] = verification["dhis2_is_not_verified"].map(
+        {"true": True, "false": False}
+    )
+
+    return verification
+
+
+@buu_init_vbr.task
+def get_hesabu_token(dhis: DHIS2) -> str:
+    """
+    Retrieve the hesabu token from the DHIS2 instance
+
+    Returns
+    -------
+    str
+        The hesabu token.
+    """
+    try:
+        endpoint = "dataStore/hesabu/hesabu"
+        response = dhis.api.get(endpoint=endpoint)
+        return response["token"]
+    except Exception as e:
+        current_run.log_error(f"Error retrieving hesabu token from the DHIS2 instance: {e}")
+        raise ValueError(f"Error retrieving hesabu token from the DHIS2 instance: {e}")
 
 
 @buu_init_vbr.task
@@ -129,7 +214,9 @@ def adapt_hesabu_packages(packages):
 
 
 @buu_init_vbr.task
-def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract, model_name):
+def prepare_quantity_data(
+    done, periods, packages, contracts, hesabu_params, extract, model_name, verification
+):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -139,7 +226,7 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
 
     Parameters
     ----------
-    done: bool
+    done: list
         Indicates that the process get_package_values has finished.
     periods: list
         The periods to be considered.
@@ -153,6 +240,8 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
     model_name: str
         The name of the model. We will use it for the name of the csv file.
+    verification: df
+        It has the information on whether the centers have been verified or not.
 
     Returns
     -------
@@ -177,11 +266,28 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
                         # It has the data for all of the periods.
 
         # We are now dropping the rows where the dec = 0 or NaN.
+        # The data for Burundi is a bit strange:
+        # Some services have the declaree = NaN or 0, and the declaree_indiv filled
+        # Some rows have the declaree_indiv = NaN or 0, and the declaree filled.
+        # We want to take both into account
         data = data.merge(contracts, on="org_unit_id")
+        data = data.merge(verification, on=["org_unit_id", "period"], how="left")
+        data["provenance_data"] = "declaree"
+        if "declaree_indiv" in data.columns:
+            ser_dec_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
+            ser_dec_indiv_not_nan_0 = data["declaree_indiv"].notna() & (data["declaree_indiv"] != 0)
+            # For these cases we do a replacement
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "declaree"] = data["declaree_indiv"]
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "validee"] = data["validee_indiv"]
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "verifiee"] = data["verifiee_indiv"]
+            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "provenance_data"] = "declaree_indiv"
+
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
+            + ["provenance_data", "dhis2_is_not_verified"]
         ]
+        data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(False)
         data.rename(
             columns=hesabu_params["contracts_attributes"],
             inplace=True,
@@ -202,8 +308,11 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         data["subside_avec_verification"] = data["val_fbp"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
+        output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
+        os.makedirs(output_dir, exist_ok=True)
+
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
+            f"{output_dir}/quantity_data_{model_name}.csv",
             index=False,
         )
     else:
@@ -223,8 +332,8 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
 
     Parameters
     ----------
-    done: bool
-        Indicates that the process get_package_values has finished.
+    done: list
+        TIndicates that the process get_package_values has finished.
     periods: list
         The periods to be considered.
     packages: dict
@@ -263,8 +372,11 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
         )
         data["score"] = data["num"] / data["denom"]
         data["month_final"] = data["quarter"].map(dates.quarter_to_months)
+        output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data"
+        os.makedirs(output_dir, exist_ok=True)
+
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
+            f"{output_dir}/quality_data_{model_name}.csv",
             index=False,
         )
     else:
@@ -399,8 +511,11 @@ def clean_quant_data(quant, clean_data, model_name):
         current_run.log_info(
             f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
         )
+        output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
+        os.makedirs(output_dir, exist_ok=True)
+
         outliers.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/outliers_quantity_data_{model_name}.csv",
+            f"{output_dir}/outliers_quantity_data_{model_name}.csv",
             index=False,
         )
 
@@ -598,7 +713,7 @@ def get_hesabu(con_hesabu):
 
 
 @buu_init_vbr.task
-def fetch_hesabu_package(con_hesabu, package_ids):
+def fetch_hesabu_package(con_hesabu, package_ids, hesabu_token):
     """Using the Hesabu connection, get the codes for the information that we need from each of the packages.
     You have a list of package IDs. They correspond to the different informations that we are going to want to extract from DHIS2.
     These packages contain different informations. We go into the Hesabu page to get the codes/names/etc of those informations.
@@ -609,6 +724,8 @@ def fetch_hesabu_package(con_hesabu, package_ids):
         Connection to the Hesabu instance.
     package_ids: list
         The IDs of the informations that we want to extract from DHIS2.
+    hesabu_token: str
+        The token to connect to Hesabu with
 
     Returns
     -------
@@ -620,7 +737,7 @@ def fetch_hesabu_package(con_hesabu, package_ids):
         "Accept": "application/vnd.api+json;version=2",
         "Accept-Language": "en-US",
         "Accept-Encoding": "gzip, deflate, br, zstd",
-        "X-Token": con_hesabu.token,
+        "X-Token": hesabu_token,
         "X-Dhis2UserId": con_hesabu.dhis2_user_id,
     }
     hesabu_packages = {}
@@ -683,9 +800,10 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
 
     Returns
     -------
-    bool:
-        We indicate that the process has finished.
+    full_list_ous:
+        A list with all of the organizational Units we need to extract data for.
     """
+    full_list_ous = []
     if extract:
         for package_id in hesabu_packages:
             # We iterate over each of the packages we want to extract.
@@ -704,6 +822,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
             # Here, we input the contract ID, the package that we are interested in and the DHIS2 connection.
             # We output a set of IDs of the organization units that we need to look at.
             org_unit_ids = list(org_unit_ids)
+            full_list_ous.extend(org_unit_ids)
             current_run.log_info(
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
@@ -720,8 +839,16 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 # Here, we input the DHIS2 connection, the degree of external reference, the list of IDs of the organization units,
                 # the periods we are interested in, the activities we are interested in and the package ID.
                 # We output a CSV file for each of the packages and each of the periods.
-
-    return True
+    else:
+        # We only need the organizational units
+        for package_id in hesabu_packages:
+            package = hesabu_packages[package_id]["content"]
+            org_unit_ids = data_extraction.get_org_unit_ids_from_hesabu(
+                contract_group, package, dhis
+            )
+            org_unit_ids = list(org_unit_ids)
+            full_list_ous.extend(org_unit_ids)
+    return full_list_ous
 
 
 @buu_init_vbr.task
@@ -781,8 +908,10 @@ def fetch_contracts(dhis, contract_program_id, model_name):
         records.append(record)
 
     records_df = pd.DataFrame(records)
+    output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts"
+    os.makedirs(output_dir, exist_ok=True)
     records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
+        f"{output_dir}/contracts_{model_name}.csv",
         index=False,
     )
     return records_df

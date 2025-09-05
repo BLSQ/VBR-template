@@ -1,0 +1,16 @@
+dict_params = {
+    "model": [],
+    "frq": [],
+    "obswin": [],
+    "minnb": [],
+    "plow": [],
+    "phigh": [],
+    "cvrf": [],
+    "seum": [],
+    "seub": [],
+    "pai": [],
+    "mxs": [],
+    "qtrisk": [],
+    "vglow": [],
+    "vgmod": [],
+}

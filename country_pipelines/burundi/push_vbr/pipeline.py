@@ -20,7 +20,7 @@ import config
     "dhis_con",
     type=DHIS2Connection,
     help="Connection to DHIS2",
-    default="pbf-pmns-rdc",
+    default="pbf-burundi",
     required=True,
 )
 @parameter("folder", name="Folder", type=str, default="service_information")
@@ -29,7 +29,7 @@ import config
     name="Periods",
     help="Periods to push to DHIS2",
     type=str,
-    default=["2025Q1", "2025Q2"],
+    default=["202410", "202411", "202412"],
     multiple=True,
 )
 @parameter(
@@ -41,7 +41,7 @@ import config
 )
 @parameter(
     "dry_run_ver",
-    name="Dry Run Verificaiton",
+    name="Dry Run Verification",
     type=bool,
     default=True,
     help="If False, we will actually push the verification data to DHIS2",
@@ -114,7 +114,7 @@ def get_data(folder, periods):
 
     for filename in os.listdir(base_path):
         for period in periods:
-            pattern = rf"prov___(.+)-prd___{period}-model__.+\.csv$"
+            pattern = rf"model___.+-prov___(.+)-prd___{period}-service\.csv$"
             match = re.search(pattern, filename)
             if match:
                 province = match.group(1)

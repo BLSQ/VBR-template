@@ -9,17 +9,20 @@ import pandas as pd
 import os
 from vbr_custom import (
     categorize_quality,
-    categorize_quantity_standard,
+    categorize_quantity_ecart,
     categorize_quantity_gain,
     define_risky_services,
     get_proportions,
     assign_taux_validation_per_zs,
+    eligible_for_vbr,
 )
 import warnings
 import random
 
 from RBV_package import dates
-from RBV_package import config_package as config
+
+import toolbox
+from config_toolbox import list_cols_df_stats
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -33,6 +36,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=str,
     required=True,
 )
+@parameter("folder", name="Output folder name", type=str, default="Extraction")
 @parameter(
     "frequence",
     name="Verification une fois par:",
@@ -55,7 +59,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de debut de la simulation",
-    default=2023,
+    default=2024,
 )
 @parameter(
     "mois_fin",
@@ -63,7 +67,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=1,
+    default=12,
 )
 @parameter(
     "year_fin",
@@ -71,7 +75,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[2023, 2024, 2025],
     help="Annee de fin de la simulation",
-    default=2025,
+    default=2024,
 )
 @parameter(
     "prix_verif",
@@ -81,11 +85,48 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     default=150000,
 )
 @parameter(
-    "seuil_gain_verif_median",
-    name="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
+    "window",
+    name="Number of months that will be considered in the simulation.",
     type=int,
-    help="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
-    default=200000,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    default=6,
+)
+@parameter(
+    "nb_period_verif",
+    name="Nombre minimum de visites effectuees dans le passe",
+    help="nombre de periodes minimum ayant ete verifies sur la fenetre d'observation pour etre eligible a la VBR",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    default=3,
+)
+@parameter(
+    "proportion_selection_bas_risque",
+    name="Pourcentage de centres verifiees a risque faible",
+    type=float,
+    help="Pourcentage de centres verifiees parmi la catégorie a risque faible",
+    default=0.1,
+)
+@parameter(
+    "proportion_selection_haut_risque",
+    name="Pourcentage de centres verifiees a risque eleve",
+    type=float,
+    help="Pourcentage de centres verifiees parmi la catégorie a risque eleve",
+    default=1.0,
+)
+@parameter(
+    "paym_method_nf",
+    name="Paiement des centres non-verifies",
+    help="Quelle methode de paiement utilise t'on pour payer les centres non-verifies (complet = payer sur base des quantites declarees; taux de validation personnel/ZS : payer sur base du montant declare multiplie par le taux de validation median personnel/de la ZS sur les precedentes periodes)",
+    type=str,
+    choices=["complet", "tauxvalidation", "tauxvalidationZS"],
+    default="tauxvalidation",
+)
+@parameter(
+    "quantity_risk_calculation",
+    name="Risk calculation method.",
+    type=str,
+    choices=["standard", "verificationgain", "ecartdecver"],
+    default="ecartdecver",
 )
 @parameter(
     "seuil_max_bas_risk",
@@ -102,67 +143,15 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     default=0.1,
 )
 @parameter(
-    "window",
-    name="fenetre d'observation minimum (# de mois)",
-    help="Number of months that will be considered in the simulation.",
-    type=int,
-    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-    default=6,
-)
-@parameter(
-    "nb_period_verif",
-    name="nombre minimum de visites effectuees dans le passe",
-    help="nombre de periodes minimum ayant ete verifies sur la fenetre d'observation pour etre eligible a la VBR",
-    type=int,
-    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    default=3,
-)
-@parameter(
-    "proportion_selection_bas_risque",
-    name="Pourcentage de centres selectionnes a risque faible",
-    type=float,
-    help="Pourcentage de centres sélectionnes parmi la catégorie a risque faible",
-    default=0.1,
-)
-@parameter(
-    "proportion_selection_haut_risque",
-    name="Pourcentage de centres selectionnes a risque eleve",
-    type=float,
-    help="Pourcentage de centres sélectionnes parmi la catégorie a risque eleve",
-    default=1.0,
-)
-@parameter(
-    "paym_method_nf",
-    name="Paiement des centres non-verifies",
-    help="Quelle methode de paiement utilise t'on pour payer les centres non-verifies (complet = payer sur base des quantites declarees; taux de validation personnel/ZS : payer sur base du montant declare multiplie par le taux de validation median personnel/de la ZS sur les precedentes periodes)",
-    type=str,
-    choices=["complet", "tauxvalidation", "tauxvalidationZS"],
-    default="tauxvalidation",
-)
-@parameter(
-    "use_quality_for_risk",
-    name="Utiliser donnees qualite pour le risque",
-    help=" (finance/hygiene/general) utilises selon les regles du PMNS pour definir le risque",
-    type=bool,
-    default=False,
-)
-@parameter(
     "max_nb_services",
-    name="Maximum number of services that can have a ecart bigger than seuil_max_moyen_risk",
-    help="Threshold for the number of services that can have a weighted_ecart_dec_val bigger than seuil_max_moyen_risk without the center being high risk",
+    name="Maximum number of high risk services",
+    help="Threshold for the number of services that can have a ecart bigger than seuil_max_moyen_risk without the center being high risk",
     type=int,
     default=0,
 )
 @parameter(
-    "quantity_risk_calculation",
-    name="The calculation method for the risk based on the val/dec/ver data. ",
-    type=str,
-    choices=["standard", "verificationgain"],
-    default="standard",
-)
-@parameter(
     "verification_gain_low",
-    name="Maximum verification gain for low risk centers",
+    name="Minimum verification gain for low risk centers",
     help="Per month",
     type=int,
     default=150000,
@@ -170,13 +159,12 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 )
 @parameter(
     "verification_gain_mod",
-    name="Maximum verification gain for moderate risk centers",
+    name="Minimum verification gain for moderate risk centers",
     help="Per month",
     type=int,
     default=100000,
     required=False,
 )
-@parameter("folder", name="Folder", type=str, default="Extraction")
 def run_vbr_burundi(
     nom_init,
     frequence,
@@ -185,7 +173,6 @@ def run_vbr_burundi(
     mois_fin,
     year_fin,
     prix_verif,
-    seuil_gain_verif_median,
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
     window,
@@ -193,7 +180,6 @@ def run_vbr_burundi(
     proportion_selection_bas_risque,
     proportion_selection_haut_risque,
     paym_method_nf,
-    use_quality_for_risk,
     folder,
     max_nb_services,
     quantity_risk_calculation,
@@ -220,7 +206,6 @@ def run_vbr_burundi(
         start,
         end,
         prix_verif,
-        seuil_gain_verif_median,
         seuil_max_bas_risk,
         seuil_max_moyen_risk,
         window,
@@ -228,7 +213,6 @@ def run_vbr_burundi(
         proportion_selection_bas_risque,
         proportion_selection_haut_risque,
         paym_method_nf,
-        use_quality_for_risk,
         nom_init,
         path_service,
         path_stats,
@@ -327,7 +311,6 @@ def run_simulation(
     start,
     end,
     prix_verif,
-    seuil_gain_verif_median,
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
     window,
@@ -335,7 +318,6 @@ def run_simulation(
     proportion_selection_bas_risque,
     proportion_selection_haut_risque,
     paym_method_nf,
-    use_quality_for_risk,
     model_name,
     path_service,
     path_stats,
@@ -420,7 +402,6 @@ def run_simulation(
             path_verif,
             path_service,
             frequence,
-            seuil_gain_verif_median,
             window,
             nb_period_verif,
             proportion_selection_bas_risque,
@@ -429,7 +410,6 @@ def run_simulation(
             seuil_max_bas_risk,
             seuil_max_moyen_risk,
             paym_method_nf,
-            use_quality_for_risk,
             month,
             model_name,
             max_nb_services,
@@ -450,13 +430,11 @@ def run_simulation(
                 frequence,
                 period,
                 prix_verif,
-                seuil_gain_verif_median,
                 seuil_max_bas_risk,
                 seuil_max_moyen_risk,
                 window,
                 nb_period_verif,
                 paym_method_nf,
-                use_quality_for_risk,
                 proportions,
                 max_nb_services,
                 quantity_risk_calculation,
@@ -465,7 +443,7 @@ def run_simulation(
             )
             rows.append(new_row)
 
-        df_stats = pd.DataFrame(rows, columns=config.list_cols_df_stats)
+        df_stats = pd.DataFrame(rows, columns=list_cols_df_stats)
 
         df_stats.to_csv(full_path_stats, index=False)
 
@@ -499,7 +477,6 @@ def create_file_names(
     path_verif,
     path_service,
     frequence,
-    seuil_gain_verif_median,
     window,
     nb_period_verif,
     proportion_selection_bas_risque,
@@ -508,7 +485,6 @@ def create_file_names(
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
     paym_method_nf,
-    use_quality_for_risk,
     month,
     model_name,
     max_nb_services,
@@ -575,9 +551,8 @@ def create_file_names(
 
     """
     file_name_verif = (
-        f"mdl___{model_name}"
+        f"model___{model_name}"
         f"-frq___{frequence}"
-        f"-gvrf___{seuil_gain_verif_median}"
         f"-obswin___{window}"
         f"-minnb___{nb_period_verif}"
         f"-plow___{proportion_selection_bas_risque}"
@@ -586,7 +561,6 @@ def create_file_names(
         f"-seum___{seuil_max_moyen_risk}"
         f"-seub___{seuil_max_bas_risk}"
         f"-pai___{paym_method_nf}"
-        f"-qlrisk___{use_quality_for_risk}"
         f"-mxs___{max_nb_services}"
         f"-qtrisk___{quantity_risk_calculation}"
         f"-vglow___{verification_gain_low}"
@@ -598,7 +572,6 @@ def create_file_names(
     file_name_stats = (
         f"month___{month}"
         f"-frq___{frequence}"
-        f"-gvrf___{seuil_gain_verif_median}"
         f"-obswin___{window}"
         f"-minnb___{nb_period_verif}"
         f"-plow___{proportion_selection_bas_risque}"
@@ -607,7 +580,6 @@ def create_file_names(
         f"-seum___{seuil_max_moyen_risk}"
         f"-seub___{seuil_max_bas_risk}"
         f"-pai___{paym_method_nf}"
-        f"-qlrisk___{use_quality_for_risk}"
         f"-mxs___{max_nb_services}"
         f"-qtrisk___{quantity_risk_calculation}"
         f"-vglow___{verification_gain_low}"
@@ -657,13 +629,11 @@ def simulate_month_group(
     frequence,
     period,
     prix_verif,
-    seuil_gain_verif_median,
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
     window,
     nb_period_verif,
     paym_method_nf,
-    use_quality_for_risk,
     proportions,
     max_nb_services,
     quantity_risk_calculation,
@@ -728,10 +698,8 @@ def simulate_month_group(
             nb_period_verif,
             window,
             paym_method_nf,
-            seuil_gain_verif_median,
             seuil_max_bas_risk,
             seuil_max_moyen_risk,
-            use_quality_for_risk,
             max_nb_services,
             quantity_risk_calculation,
             verification_gain_low,
@@ -741,9 +709,9 @@ def simulate_month_group(
     full_path_verif = os.path.join(
         f"{path_verif_per_group}-prov___{group.name}-prd___{period}.csv",
     )
-    group.get_verification_information()
+    toolbox.get_verification_information(group)
     df_group_service = group.get_service_information()
-    stats = group.get_statistics(period)
+    stats = toolbox.get_statistics(group, period)
 
     group.df_verification.to_csv(
         full_path_verif,
@@ -787,9 +755,11 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     if pd.api.types.is_numeric_dtype(ou.qualite["month"]):
         ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
     ou.set_window(window)
-    ou.get_ecart_median()
+    toolbox.get_ecart_median(ou)
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
+    quantite_month = ou.quantite_window[ou.quantite_window.month == ou.period]
+    ou.dhis2_is_not_verified = quantite_month.dhis2_is_not_verified.astype(bool).any()
 
 
 def process_ou(
@@ -800,10 +770,8 @@ def process_ou(
     nb_period_verif,
     window,
     paym_method_nf,
-    seuil_gain_verif_median,
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
-    use_quality_for_risk,
     max_nb_services,
     quantity_risk_calculation,
     verification_gain_low,
@@ -856,21 +824,39 @@ def process_ou(
 
     ou.define_gain_quantities(group.cout_verification_centre)
 
-    if use_quality_for_risk:
-        categorize_quality(ou)
-
     define_risky_services(ou, seuil_max_bas_risk, seuil_max_moyen_risk)
 
-    if quantity_risk_calculation == "standard":
-        categorize_quantity_standard(ou, seuil_gain_verif_median, max_nb_services)
-    elif quantity_risk_calculation == "verificationgain":
-        categorize_quantity_gain(
+    if eligible_for_vbr(ou):
+        ou.risk_weighted_ecart = categorize_quantity_ecart(
+            max_nb_services,
+            ou.nb_services_moyen_risk,
+            ou.nb_services_risky,
+        )
+        ou.risk_ecart_dec_ver = categorize_quantity_ecart(
+            max_nb_services,
+            ou.nb_services_moyen_risk_dec_ver,
+            ou.nb_services_risky_dec_ver,
+        )
+        ou.risk_gain_verif = categorize_quantity_gain(
             ou,
             verification_gain_low,
             verification_gain_mod,
         )
+        if quantity_risk_calculation == "standard":
+            ou.risk_quantite = ou.risk_weighted_ecart
+        elif quantity_risk_calculation == "ecartdecver":
+            ou.risk_quantite = ou.risk_ecart_dec_ver
+        elif quantity_risk_calculation == "verificationgain":
+            ou.risk_quantite = ou.risk_gain_verif
 
-    ou.mix_risks(use_quality_for_risk)
+    else:
+        ou.risk_quantite = "uneligible"
+        ou.risk = "uneligible"
+        ou.risk_weighted_ecart = "uneligible"
+        ou.risk_ecart_dec_ver = "uneligible"
+        ou.risk_gain_verif = "uneligible"
+
+    ou.mix_risks(use_quality_for_risk=False)
 
     ou.set_verification(random.uniform(0, 1) <= group.proportions[ou.risk])
 
