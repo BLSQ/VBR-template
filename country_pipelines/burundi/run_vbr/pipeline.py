@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 )
 @parameter(
     "prix_verif",
-    name="Cout de verification (euros)",
+    name="Cout de verification (FBU)",
     type=int,
     help="Cout de verification par centre de sante",
     default=150000,

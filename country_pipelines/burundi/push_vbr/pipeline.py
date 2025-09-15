@@ -4,11 +4,13 @@ from openhexa.sdk import (
     workspace,
     parameter,
     DHIS2Connection,
+    File,
 )
 from openhexa.toolbox.dhis2 import DHIS2
 import pandas as pd
 import regex as re
 import os
+from pathlib import Path
 import json
 import requests
 
@@ -23,13 +25,11 @@ import config
     default="pbf-burundi",
     required=True,
 )
-@parameter("folder", name="Folder", type=str, default="service_information")
 @parameter(
-    "periods",
-    name="Periods",
-    help="Periods to push to DHIS2",
-    type=str,
-    default=["202410", "202411", "202412"],
+    "file_to_push",
+    name="File with the information to push",
+    type=File,
+    required=True,
     multiple=True,
 )
 @parameter(
@@ -46,18 +46,18 @@ import config
     default=True,
     help="If False, we will actually push the verification data to DHIS2",
 )
-def push_vbr(dhis_con, folder, periods, dry_run_taux, dry_run_ver):
+def push_vbr(dhis_con, file_to_push, dry_run_taux, dry_run_ver):
     """
     Pipeline to push the taux de validation and center validation to DHIS2.
     """
-    data = get_data(folder, periods)
+    output_path, data = get_data(file_to_push)
     dhis = get_dhis2(dhis_con)
     services = get_service_codes()
     data_with_services = merge_service_codes(data, services)
     done = check_data(data_with_services)
-    data_taux = prepare_taux_for_dhis(data_with_services, done, folder, dry_run_taux)
-    data_ver = prepare_ver_for_dhis(data_with_services, done, folder, dry_run_ver)
-    summary_taux = push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver, folder)
+    data_taux = prepare_taux_for_dhis(data_with_services, done, output_path, dry_run_taux)
+    data_ver = prepare_ver_for_dhis(data_with_services, done, output_path, dry_run_ver)
+    push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver, output_path)
 
 
 def get_period_list(period):
@@ -88,60 +88,70 @@ def get_period_list(period):
     return list_periods
 
 
-@push_vbr.task
-def get_data(folder, periods):
+def get_data(list_files: list[File]):
     """
     Get the verification data for the specified periods from the workspace.
 
     Parameters
     ----------
-    folder: str
-        The folder where the data is stored.
-    periods: list
-        The periods for which to retrieve the data.
+    list_files: list[File]
+        The file with the data
 
     Returns
     -------
-    pd.DataFrame or None
-        A DataFrame containing the verification data for the specified periods,
-        or None if no data is found.
+    output_path: str
+        The place where the output data will be saved
+    data: pd.DataFrame
+        The data to push to DHIS2
 
     """
-    current_run.log_info(f"Getting data for periods: {periods} and the folder: {folder}")
-    files_ok = []
-    files_not_ok = []
-    base_path = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/"
+    set_output_folders = set()
+    list_data = []
+    for file in list_files:
+        file_path = Path(file.path)
+        file_name = file.name
+        current_run.log_info(f"Getting data for file: {file}")
 
-    for filename in os.listdir(base_path):
-        for period in periods:
-            pattern = rf"model___.+-prov___(.+)-prd___{period}-service\.csv$"
-            match = re.search(pattern, filename)
-            if match:
-                province = match.group(1)
-                file_path = os.path.join(base_path, filename)
-                df = pd.read_csv(file_path)
-                df["province"] = province
-                files_ok.append(df)
-                break
-        else:
-            files_not_ok.append(filename)
+        target_folder = file_path.parents[2].name
+        set_output_folders.add(target_folder)
 
-    if len(files_not_ok) > 0:
-        current_run.log_warning(
-            f"There are files in the folder {folder} not matching the pattern: {files_not_ok}"
+        pipeline_folder = file_path.parents[3].name
+
+        pattern = r"model___.+-prov___.+-prd___.+-service\.csv$"
+        if not re.match(pattern, file_name):
+            current_run.log_error(
+                f"The file name {file_name} does not match the expected pattern {pattern}"
+                "I will not use it."
+            )
+            continue
+
+        if pipeline_folder != "run_vbr":
+            current_run.log_error(
+                f"The file {file_name} is not in the expected folder 'run_vbr'. It is in {pipeline_folder}. I will not use it."
+            )
+            continue
+
+        df = pd.read_csv(file_path)
+        list_data.append(df)
+
+    if len(set_output_folders) != 1:
+        current_run.log_error(
+            f"The files are in different target folders: {set_output_folders}. I will not be able to construct the output path."
         )
+        raise ValueError("Files in different target folders")
 
-    if len(files_ok) > 0:
-        df = pd.concat(files_ok, ignore_index=True)
-        current_run.log_info("Data has been successfully retrieved.")
-        current_run.log_info(f"Number of rows: {len(df)}")
-        return df
-    else:
-        current_run.log_error("No data found for the specified periods.")
-        raise ValueError("No data found for the specified periods.")
+    if not list_data:
+        current_run.log_error("No valid files to process. Exiting.")
+        raise ValueError("No valid files to process")
+
+    data = pd.concat(list_data, ignore_index=True)
+    target_folder = set_output_folders.pop()
+    output_path = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{target_folder}"
+    current_run.log_info(f"Output path: {output_path}")
+
+    return output_path, data
 
 
-@push_vbr.task
 def get_dhis2(con_oh):
     """Start the connection to the DHIS2 instance.
 
@@ -158,7 +168,6 @@ def get_dhis2(con_oh):
     return DHIS2(con_oh)
 
 
-@push_vbr.task
 def get_service_codes():
     """
     Get the service codes from the configuration file.
@@ -178,7 +187,6 @@ def get_service_codes():
     return codes_services
 
 
-@push_vbr.task
 def merge_service_codes(data, services):
     """
     Merge the service codes with the data.
@@ -207,7 +215,6 @@ def merge_service_codes(data, services):
     return data
 
 
-@push_vbr.task
 def check_data(data):
     """
     Check if the data is valid and ready to be pushed to DHIS2.
@@ -246,8 +253,7 @@ def check_data(data):
     return True
 
 
-@push_vbr.task
-def prepare_taux_for_dhis(data, done, folder, dry_run):
+def prepare_taux_for_dhis(data, done, output_path, dry_run):
     """
     Prepare the taux data for DHIS2.
 
@@ -257,8 +263,8 @@ def prepare_taux_for_dhis(data, done, folder, dry_run):
         The data to prepare.
     done: bool
         Used to stop this task from starting before we have checked the data
-    folder: str
-        The folder where the data is stored.
+    output_path: str
+        The base output path
     dry_run: bool
         If True, we will not actually push the data to DHIS2.
 
@@ -287,7 +293,7 @@ def prepare_taux_for_dhis(data, done, folder, dry_run):
                 }
             )
 
-    output_folder = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/pushed_data"
+    output_folder = f"{output_path}/pushed_data"
     os.makedirs(output_folder, exist_ok=True)
 
     df_taux = pd.DataFrame(values_to_post_taux)
@@ -296,8 +302,7 @@ def prepare_taux_for_dhis(data, done, folder, dry_run):
     return values_to_post_taux
 
 
-@push_vbr.task
-def prepare_ver_for_dhis(data, done, folder, dry_run):
+def prepare_ver_for_dhis(data, done, output_path, dry_run):
     """
     Prepare the center verification data for DHIS2.
 
@@ -307,8 +312,8 @@ def prepare_ver_for_dhis(data, done, folder, dry_run):
         The data to prepare.
     done: bool
         Used to stop this task from starting before we have checked the data
-    folder: str
-        The folder where the data is stored.
+    output_path: str
+        The base output path
     dry_run: bool
         If True, we will not actually push the data to DHIS2.
 
@@ -339,7 +344,7 @@ def prepare_ver_for_dhis(data, done, folder, dry_run):
                 }
             )
 
-    output_folder = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/pushed_data"
+    output_folder = f"{output_path}/pushed_data"
     os.makedirs(output_folder, exist_ok=True)
 
     df_ver = pd.DataFrame(values_to_post_ver)
@@ -357,14 +362,13 @@ def flip_binary(value):
         return value
 
 
-@push_vbr.task
 def push_to_dhis2(
     dhis,
     data_taux,
     data_ver,
     dry_run_taux,
     dry_run_ver,
-    folder,
+    output_path,
     import_strategy="CREATE_AND_UPDATE",
     max_post=1000,
 ):
@@ -407,11 +411,9 @@ def push_to_dhis2(
             },
         ]
     )
-    folder = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{folder}/pushed_data"
+    folder = f"{output_path}/pushed_data"
     os.makedirs(folder, exist_ok=True)
     summary.to_csv(f"{folder}/summary_push.csv", index=False)
-
-    return summary
 
 
 def push_data_elements(

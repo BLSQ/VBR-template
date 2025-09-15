@@ -29,7 +29,8 @@ def get_proportions(p_low, p_high):
         "high": p_high,
         "uneligible": 1,
     }
-    current_run.log_info(f"Proportions: {dict_proportions}")
+    proportions_to_display = {k: v for k, v in dict_proportions.items() if k != "uneligible"}
+    current_run.log_info(f"Proportions of verified centers: {proportions_to_display}")
     return dict_proportions
 
 
