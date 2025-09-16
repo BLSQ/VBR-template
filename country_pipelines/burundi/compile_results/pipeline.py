@@ -303,7 +303,6 @@ def process_verification_info(df):
             "vgmod",
             "name",
             "level_2_name",
-            "level_3_name",
         ],
         as_index=False,
     )[

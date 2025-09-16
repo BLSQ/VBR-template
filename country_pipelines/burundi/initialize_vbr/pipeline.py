@@ -48,7 +48,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=int,
     help="Number of months to extract",
     required=True,
-    default=25,
+    default=12,
 )
 @parameter(
     "model_name",
@@ -151,10 +151,15 @@ def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.Dat
             )
 
     verification = pd.DataFrame(verification_rows)
-    verification["period"] = pd.to_numeric(verification["period"], errors="raise")
-    verification["dhis2_is_not_verified"] = verification["dhis2_is_not_verified"].map(
-        {"true": True, "false": False}
-    )
+    if not verification.empty:
+        verification["period"] = pd.to_numeric(verification["period"], errors="raise")
+        verification["dhis2_is_not_verified"] = verification["dhis2_is_not_verified"].map(
+            {"true": True, "false": False}
+        )
+    else:
+        verification = pd.DataFrame(
+            columns=["org_unit_id", "period", "dhis2_is_not_verified"]
+        ).astype({"org_unit_id": str, "period": int, "dhis2_is_not_verified": bool})
 
     return verification
 
