@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import json
 import requests
+from datetime import datetime
 
 import config
 
@@ -50,14 +51,14 @@ def push_vbr(dhis_con, file_to_push, dry_run_taux, dry_run_ver):
     """
     Pipeline to push the taux de validation and center validation to DHIS2.
     """
-    output_path, data = get_data(file_to_push)
+    output_path, data, dt = get_data(file_to_push)
     dhis = get_dhis2(dhis_con)
     services = get_service_codes()
     data_with_services = merge_service_codes(data, services)
     done = check_data(data_with_services)
-    data_taux = prepare_taux_for_dhis(data_with_services, done, output_path, dry_run_taux)
-    data_ver = prepare_ver_for_dhis(data_with_services, done, output_path, dry_run_ver)
-    push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver, output_path)
+    data_taux = prepare_taux_for_dhis(data_with_services, done, output_path, dry_run_taux, dt)
+    data_ver = prepare_ver_for_dhis(data_with_services, done, output_path, dry_run_ver, dt)
+    push_to_dhis2(dhis, data_taux, data_ver, dry_run_taux, dry_run_ver, output_path, dt=dt)
 
 
 def get_period_list(period):
@@ -107,6 +108,8 @@ def get_data(list_files: list[File]):
     """
     set_output_folders = set()
     list_data = []
+    dict_okey_files = {}
+
     for file in list_files:
         file_path = Path(file.path)
         file_name = file.name
@@ -133,6 +136,7 @@ def get_data(list_files: list[File]):
 
         df = pd.read_csv(file_path)
         list_data.append(df)
+        dict_okey_files[file_name] = df
 
     if len(set_output_folders) != 1:
         current_run.log_error(
@@ -147,9 +151,16 @@ def get_data(list_files: list[File]):
     data = pd.concat(list_data, ignore_index=True)
     target_folder = set_output_folders.pop()
     output_path = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{target_folder}"
+    os.makedirs(output_path, exist_ok=True)
+
+    for file_name, df in dict_okey_files.items():
+        df.to_csv(f"{output_path}/{file_name}", index=False)
+
     current_run.log_info(f"Output path: {output_path}")
 
-    return output_path, data
+    dt = datetime.now().strftime("%Y_%m_%d_%H%M")
+
+    return output_path, data, dt
 
 
 def get_dhis2(con_oh):
@@ -253,7 +264,7 @@ def check_data(data):
     return True
 
 
-def prepare_taux_for_dhis(data, done, output_path, dry_run):
+def prepare_taux_for_dhis(data, done, output_path, dry_run, dt):
     """
     Prepare the taux data for DHIS2.
 
@@ -267,13 +278,14 @@ def prepare_taux_for_dhis(data, done, output_path, dry_run):
         The base output path
     dry_run: bool
         If True, we will not actually push the data to DHIS2.
+    dt: str
+        Current date and time string for file naming.
 
     Returns
     -------
     list
         A list of dictionaries containing the data to post to DHIS2.
     """
-
     values_to_post_taux = []
     periods_to_post = data["period"].unique()
     dict_periods = {period: get_period_list(period) for period in periods_to_post}
@@ -297,12 +309,12 @@ def prepare_taux_for_dhis(data, done, output_path, dry_run):
     os.makedirs(output_folder, exist_ok=True)
 
     df_taux = pd.DataFrame(values_to_post_taux)
-    df_taux.to_csv(f"{output_folder}/taux_data_dry_run_{dry_run}.csv", index=False)
+    df_taux.to_csv(f"{output_folder}/taux_data_dry_run_{dry_run}_{dt}.csv", index=False)
 
     return values_to_post_taux
 
 
-def prepare_ver_for_dhis(data, done, output_path, dry_run):
+def prepare_ver_for_dhis(data, done, output_path, dry_run, dt):
     """
     Prepare the center verification data for DHIS2.
 
@@ -316,6 +328,8 @@ def prepare_ver_for_dhis(data, done, output_path, dry_run):
         The base output path
     dry_run: bool
         If True, we will not actually push the data to DHIS2.
+    dt: str
+        Current date and time string for file naming.
 
     Returns
     -------
@@ -348,7 +362,7 @@ def prepare_ver_for_dhis(data, done, output_path, dry_run):
     os.makedirs(output_folder, exist_ok=True)
 
     df_ver = pd.DataFrame(values_to_post_ver)
-    df_ver.to_csv(f"{output_folder}/ver_data_dry_run_{dry_run}.csv", index=False)
+    df_ver.to_csv(f"{output_folder}/ver_data_dry_run_{dry_run}_{dt}.csv", index=False)
 
     return values_to_post_ver
 
@@ -371,6 +385,7 @@ def push_to_dhis2(
     output_path,
     import_strategy="CREATE_AND_UPDATE",
     max_post=1000,
+    dt=None,
 ):
     """
     Push the data to DHIS2.
@@ -413,7 +428,7 @@ def push_to_dhis2(
     )
     folder = f"{output_path}/pushed_data"
     os.makedirs(folder, exist_ok=True)
-    summary.to_csv(f"{folder}/summary_push.csv", index=False)
+    summary.to_csv(f"{folder}/summary_push_{dt}.csv", index=False)
 
 
 def push_data_elements(
