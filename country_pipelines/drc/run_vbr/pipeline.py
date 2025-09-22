@@ -17,9 +17,10 @@ from vbr_custom import (
 import warnings
 import random
 
-from RBV_package import dates
-from RBV_package import config_package as config
+import toolbox
+import config_toolbox
 
+from RBV_package import dates
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -28,141 +29,134 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @pipeline("rdc-pmns-vbr", name="rdc_pmns_vbr", timeout=20000)
 @parameter(
     "nom_init",
-    name="Nom du fichier d'initialisation pour la simulation",
+    name="Name of the initialization file",
+    help="It comes from the first pipeline",
     default="model",
     type=str,
     required=True,
 )
+@parameter("folder", name="Output folder name", type=str, default="Extraction")
+@parameter(
+    "mois_start",
+    name="Start month of the simulation",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    help="If frequency = quarter: put a month that is part of the quarter",
+    default=11,
+)
+@parameter(
+    "year_start",
+    name="Start year for the simulation",
+    type=int,
+    choices=[2023, 2024, 2025],
+    default=2024,
+)
+@parameter(
+    "mois_fin",
+    name="End month For the simulation",
+    type=int,
+    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    help="If frequency = quarter: put a month that is part of the quarter",
+    default=12,
+)
+@parameter(
+    "year_fin",
+    name="End year for the simulation",
+    type=int,
+    choices=[2023, 2024, 2025],
+    default=2024,
+)
 @parameter(
     "frequence",
-    name="Verification une fois par:",
-    help="Une visite par mois ou une visite par trimestre",
+    name="Frequency of verification - do not change",
+    help="For PMNS, one visit per quarter",
     type=str,
     choices=["mois", "trimestre"],
     default="trimestre",
 )
 @parameter(
-    "mois_start",
-    name="Mois de debut de la simulation",
-    type=int,
-    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=1,
-)
-@parameter(
-    "year_start",
-    name="Annee de debut de la simulation",
-    type=int,
-    choices=[2023, 2024, 2025],
-    help="Annee de debut de la simulation",
-    default=2023,
-)
-@parameter(
-    "mois_fin",
-    name="Mois de fin de la simulation",
-    type=int,
-    choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=12,
-)
-@parameter(
-    "year_fin",
-    name="Annee de fin de la simulation",
-    type=int,
-    choices=[2023, 2024, 2025],
-    help="Annee de fin de la simulation",
-    default=2024,
-)
-@parameter(
-    "prix_verif",
-    name="Cout de verification (euros)",
-    type=int,
-    help="Cout de verification par centre de sante",
-    default=100,
-)
-@parameter(
-    "seuil_gain_verif_median",
-    name="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
-    type=int,
-    help="Gain de verification median a partir duquel un centre est a haut risque (euros) ",
-    default=150,
-)
-@parameter(
-    "seuil_max_bas_risk",
-    name="Seuil maximal pour categorie de risque faible",
-    type=float,
-    help="Seuil maximal pour categorie de risque faible",
-    default=0.1,
-)
-@parameter(
-    "seuil_max_moyen_risk",
-    name="Seuil maximal pour categorie de risque modere",
-    type=float,
-    help="Seuil maximal pour categorie de risque modere",
-    default=0.2,
-)
-@parameter(
     "window",
-    name="fenetre d'observation minimum (# de mois)",
-    help="Number of months that will be considered in the simulation.",
+    name="Number of months that will be considered in the simulation. - do not change",
+    help="Historical data we will take into account in our simulation.",
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
     default=6,
 )
 @parameter(
     "nb_period_verif",
-    name="nombre minimum de visites effectuees dans le passe",
-    help="nombre de periodes minimum ayant ete verifies sur la fenetre d'observation pour etre eligible a la VBR",
+    name="Minimum number of verification visits in the past - do not change",
+    help="If the center was verified less than these amount of times, we will automatically verify it.",
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
     default=3,
 )
 @parameter(
-    "proportion_selection_bas_risque",
-    name="Pourcentage de centres selectionnes a risque faible",
-    type=float,
-    help="Pourcentage de centres sélectionnes parmi la catégorie a risque faible",
-    default=0.4,
-)
-@parameter(
-    "proportion_selection_moyen_risque",
-    name="Pourcentage de centres selectionnes a risque modere",
-    type=float,
-    help="Pourcentage de centres sélectionnés parmi la catégorie à risque modere",
-    default=0.8,
-)
-@parameter(
-    "proportion_selection_haut_risque",
-    name="Pourcentage de centres selectionnes a risque eleve",
-    type=float,
-    help="Pourcentage de centres sélectionnes parmi la catégorie a risque eleve",
-    default=1.0,
+    "prix_verif",
+    name="Cost of verification - do not change",
+    type=int,
+    help="How much it costs to verify a center, including transport, per diems, etc (euros)",
+    default=150,
 )
 @parameter(
     "paym_method_nf",
-    name="Paiement des centres non-verifies",
-    help="Quelle methode de paiement utilise t'on pour payer les centres non-verifies (complet = payer sur base des quantites declarees; taux de validation personnel/ZS : payer sur base du montant declare multiplie par le taux de validation median personnel/de la ZS sur les precedentes periodes)",
+    name="Payment method for non-verified centers - do not change",
+    help="complet: full payment; tauxval: payment based on taux of validation; tauxvalZS: payment based on taux of validation per ZS",
     type=str,
     choices=["complet", "tauxval", "tauxvalZS"],
     default="tauxval",
 )
 @parameter(
-    "use_quality_for_risk",
-    name="Utiliser donnees qualite pour le risque",
-    help=" (finance/hygiene/general) utilises selon les regles du PMNS pour definir le risque",
-    type=bool,
-    default=False,
+    "proportion_selection_bas_risque",
+    name="Percentage of low risk centers selected for verification - do not change",
+    type=float,
+    help="Among the low risk centers, we will randomly select this percentage of centers to be verified",
+    default=0.4,
+)
+@parameter(
+    "proportion_selection_moyen_risque",
+    name="Percentage of moderate risk centers selected for verification - do not change",
+    type=float,
+    help="Among the moderate risk centers, we will randomly select this percentage of centers to be verified",
+    default=0.8,
+)
+@parameter(
+    "proportion_selection_haut_risque",
+    name="Percentage of high risk centers selected for verification - do not change",
+    type=float,
+    help="Among the high risk centers, we will randomly select this percentage of centers to be verified",
+    default=1.0,
 )
 @parameter(
     "quantity_risk_calculation",
-    name="The calculation method for the risk based on the val/dec/ver data. ",
+    name="Risk calculation method - do not change",
     type=str,
     choices=["standard", "ecartmedgen", "ecartavggen", "verifgain"],
     default="standard",
 )
 @parameter(
+    "seuil_gain_verif_median",
+    name="Threshold verification gain for high risk centers (euros) - do not change",
+    type=int,
+    help="If the we verify a center, and the gain is above this threshold, then the center is considered at high risk",
+    default=200,
+)
+@parameter(
+    "seuil_max_bas_risk",
+    name="Threshold for low risk centers - do not change",
+    type=float,
+    help="Maximum difference between the declared, validated and verified values for low risk centers.",
+    default=0.05,
+)
+@parameter(
+    "seuil_max_moyen_risk",
+    name="Threshold for moderate risk centers - do not change",
+    type=float,
+    help="Maximum difference between the declared, validated and verified values for moderate risk centers.",
+    default=0.1,
+)
+@parameter(
     "verification_gain_low",
-    name="Maximum verification gain for low risk centers",
+    name="Minimum verification gain for low risk centers - do not change",
     help="Per month",
     type=int,
     default=100,
@@ -170,13 +164,12 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 )
 @parameter(
     "verification_gain_mod",
-    name="Maximum verification gain for moderate risk centers",
+    name="Minimum verification gain for moderate risk centers - do not change",
     help="Per month",
     type=int,
     default=75,
     required=False,
 )
-@parameter("folder", name="Folder", type=str, default="u")
 def rdc_pmns_vbr(
     nom_init,
     frequence,
@@ -194,7 +187,6 @@ def rdc_pmns_vbr(
     proportion_selection_moyen_risque,
     proportion_selection_haut_risque,
     paym_method_nf,
-    use_quality_for_risk,
     folder,
     quantity_risk_calculation,
     verification_gain_low,
@@ -230,7 +222,6 @@ def rdc_pmns_vbr(
         proportion_selection_moyen_risque,
         proportion_selection_haut_risque,
         paym_method_nf,
-        use_quality_for_risk,
         nom_init,
         path_service,
         path_stats,
@@ -337,7 +328,6 @@ def run_simulation(
     proportion_selection_moyen_risque,
     proportion_selection_haut_risque,
     paym_method_nf,
-    use_quality_for_risk,
     model_name,
     path_service,
     path_stats,
@@ -430,7 +420,6 @@ def run_simulation(
             seuil_max_bas_risk,
             seuil_max_moyen_risk,
             paym_method_nf,
-            use_quality_for_risk,
             month,
             model_name,
             quantity_risk_calculation,
@@ -456,7 +445,6 @@ def run_simulation(
                 window,
                 nb_period_verif,
                 paym_method_nf,
-                use_quality_for_risk,
                 proportions,
                 quantity_risk_calculation,
                 verification_gain_low,
@@ -465,7 +453,7 @@ def run_simulation(
             )
             rows.append(new_row)
 
-        df_stats = pd.DataFrame(rows, columns=config.list_cols_df_stats)
+        df_stats = pd.DataFrame(rows, columns=config_toolbox.list_cols_df_stats)
 
         df_stats.to_csv(full_path_stats, index=False)
 
@@ -508,7 +496,6 @@ def create_file_names(
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
     paym_method_nf,
-    use_quality_for_risk,
     month,
     model_name,
     quantity_risk_calculation,
@@ -581,11 +568,10 @@ def create_file_names(
         f"-pmod___{proportion_selection_moyen_risque}"
         f"-phigh___{proportion_selection_haut_risque}"
         f"-cvrf___{prix_verif}"
+        f"-qtrisk___{quantity_risk_calculation}"
         f"-seum___{seuil_max_moyen_risk}"
         f"-seub___{seuil_max_bas_risk}"
         f"-pai___{paym_method_nf}"
-        f"-qlrisk___{use_quality_for_risk}"
-        f"-qtrisk___{quantity_risk_calculation}"
         f"-vglow___{verification_gain_low}"
         f"-vgmod___{verification_gain_mod}"
     )
@@ -606,7 +592,6 @@ def create_file_names(
         f"-seum___{seuil_max_moyen_risk}"
         f"-seub___{seuil_max_bas_risk}"
         f"-pai___{paym_method_nf}"
-        f"-qlrisk___{use_quality_for_risk}"
         f"-qtrisk___{quantity_risk_calculation}"
         f"-vglow___{verification_gain_low}"
         f"-vgmod___{verification_gain_mod}.csv"
@@ -656,7 +641,6 @@ def simulate_month_group(
     window,
     nb_period_verif,
     paym_method_nf,
-    use_quality_for_risk,
     proportions,
     quantity_risk_calculation,
     verification_gain_low,
@@ -723,7 +707,6 @@ def simulate_month_group(
             seuil_gain_verif_median,
             seuil_max_bas_risk,
             seuil_max_moyen_risk,
-            use_quality_for_risk,
             quantity_risk_calculation,
             verification_gain_low,
             verification_gain_mod,
@@ -732,9 +715,9 @@ def simulate_month_group(
     full_path_verif = os.path.join(
         f"{path_verif_per_group}-prov___{group.name}-prd___{period}.csv",
     )
-    group.get_verification_information()
+    toolbox.get_verification_information(group)
     df_group_service = group.get_service_information()
-    stats = group.get_statistics(period)
+    stats = toolbox.get_statistics(group, period)
 
     group.df_verification.to_csv(
         full_path_verif,
@@ -782,6 +765,8 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     ou.get_ecart_median()
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
+    quantite_month = ou.quantite_window[ou.quantite_window.month == ou.period]
+    ou.dhis2_is_not_verified = quantite_month.dhis2_is_not_verified.astype(bool).any()
 
 
 def process_ou(
@@ -795,7 +780,6 @@ def process_ou(
     seuil_gain_verif_median,
     seuil_max_bas_risk,
     seuil_max_moyen_risk,
-    use_quality_for_risk,
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
@@ -862,7 +846,7 @@ def process_ou(
         ou.risk = "uneligible"
         ou.risk_gain_median = "uneligible"
 
-    ou.mix_risks(use_quality_for_risk)
+    ou.mix_risks(False)
 
     ou.set_verification(random.uniform(0, 1) <= group.proportions[ou.risk])
 
