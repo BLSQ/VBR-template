@@ -28,11 +28,6 @@ def get_verification_information(self):
                 ou.ecart_median_gen,
                 ou.ecart_avg_gen,
                 ou.risk,
-                ou.quality_high_risk,
-                ou.quality_mod_risk,
-                ou.quality_low_risk,
-                ou.nb_services_moyen_risk,
-                ou.nb_services,
             ]
         )
         rows.append(new_row)

@@ -40,7 +40,7 @@ import config
 )
 @parameter(
     "dry_run_ver",
-    name="Dry Run Verificaiton",
+    name="Dry Run Verification",
     type=bool,
     default=True,
     help="If False, we will actually push the verification data to DHIS2",
@@ -48,7 +48,7 @@ import config
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
-    help="Connection to DHIS2 - do not change",
+    name="Connection to DHIS2 - do not change",
     default="pbf-pmns-rdc",
     required=True,
 )

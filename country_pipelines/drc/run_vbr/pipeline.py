@@ -765,8 +765,13 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
     ou.get_ecart_median()
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
-    quantite_month = ou.quantite_window[ou.quantite_window.month == ou.period]
+    quantite_month = ou.quantite[ou.quantite.month == ou.month]
     ou.dhis2_is_not_verified = quantite_month.dhis2_is_not_verified.astype(bool).any()
+    if quantite_month["dhis2_is_not_verified"].nunique() > 1:
+        current_run.log_warning(
+            f"There are incoherent values for dhis2_is_not_verified for {ou.name} in month {ou.month}"
+        )
+        # It should never go through here...
 
 
 def process_ou(

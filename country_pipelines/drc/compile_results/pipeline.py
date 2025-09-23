@@ -89,8 +89,7 @@ def create_verification_file(
     for f in listdir(input_files):
         if valid_simulation_name(f):
             new_detailed_df = get_parameters(f).merge(get_statistics(input_files, f), on="name")
-            new_df = process_verification_info(new_detailed_df)
-            list_dfs.append(new_df)
+            list_dfs.append(new_detailed_df)
         else:
             current_run.log_warning(f"The file {f} does not correspond to a valid simulation.")
 

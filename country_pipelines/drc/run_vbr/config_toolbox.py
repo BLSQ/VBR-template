@@ -24,11 +24,6 @@ list_cols_df_verification = [
     "ecart_median_general",
     "ecart_average_general",
     "categorie_risque",
-    "high_risk_quality_indicators",
-    "middle_risk_quality_indicators",
-    "low_risk_quality_indicators",
-    "nb_services_above_seuil",
-    "nb_services",
 ]
 list_cols_df_stats = [
     "province",

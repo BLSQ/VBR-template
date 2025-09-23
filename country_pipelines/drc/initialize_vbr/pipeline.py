@@ -182,6 +182,8 @@ def prepare_quantity_data(
 
         # We are now dropping the rows where the dec = 0 or NaN.
         data = pl.concat(list_all_data, how="diagonal").to_pandas()
+        data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(0).astype(int)
+        # There are still some NaNs -- which makes sense, there are OUs for which we have pushed no data.
         data = data[data["declaree"].notna() & (data["declaree"] != 0)]
         data = data.merge(contracts, on="org_unit_id")
         data = data[
@@ -189,9 +191,6 @@ def prepare_quantity_data(
             + list(hesabu_params["contracts_attributes"].keys())
             + ["dhis2_is_not_verified"]
         ]
-
-        data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(0)
-        data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].astype(int)
         data.rename(
             columns=hesabu_params["contracts_attributes"],
             inplace=True,
@@ -325,22 +324,19 @@ def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pl.Dat
 
     verification = pl.DataFrame(verification_rows)
     if verification.height > 0:
-        verification = verification.with_columns(pl.col("period").cast(pl.Int64))
-
         verification = verification.with_columns(
-            pl.when(pl.col("dhis2_is_not_verified") == "true")
-            .then(True)
-            .when(pl.col("dhis2_is_not_verified") == "false")
-            .then(False)
-            .otherwise(None)
-            .alias("dhis2_is_not_verified")
+            [
+                pl.col("period").cast(pl.Int64),
+                pl.col("dhis2_is_not_verified").fill_null(0).cast(pl.Int64),
+            ]
         )
+
     else:
         verification = pl.DataFrame(
             schema={
                 "org_unit_id": pl.Utf8,
                 "period": pl.Int64,
-                "dhis2_is_not_verified": pl.Boolean,
+                "dhis2_is_not_verified": pl.Int64,
             }
         )
 
@@ -737,6 +733,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
             )
             org_unit_ids = list(org_unit_ids)
             full_list_ous.extend(org_unit_ids)
+    full_list_ous = list(set(full_list_ous))
     return full_list_ous
 
 
