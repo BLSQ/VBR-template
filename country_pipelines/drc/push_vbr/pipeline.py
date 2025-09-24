@@ -17,13 +17,12 @@ import config
 
 @pipeline("rdc-push-ver", name="rdc_push_ver", timeout=20000)
 @parameter(
-    "dhis_con",
-    type=DHIS2Connection,
-    help="Connection to DHIS2",
-    default="pbf-pmns-rdc",
-    required=True,
+    "folder",
+    name="Name of the folder",
+    help="That contains the data that we want to push",
+    type=str,
+    default="service_information",
 )
-@parameter("folder", name="Folder", type=str, default="service_information")
 @parameter(
     "periods",
     name="Periods",
@@ -41,10 +40,17 @@ import config
 )
 @parameter(
     "dry_run_ver",
-    name="Dry Run Verificaiton",
+    name="Dry Run Verification",
     type=bool,
     default=True,
     help="If False, we will actually push the verification data to DHIS2",
+)
+@parameter(
+    "dhis_con",
+    type=DHIS2Connection,
+    name="Connection to DHIS2 - do not change",
+    default="pbf-pmns-rdc",
+    required=True,
 )
 def rdc_push_ver(dhis_con, folder, periods, dry_run_taux, dry_run_ver):
     """

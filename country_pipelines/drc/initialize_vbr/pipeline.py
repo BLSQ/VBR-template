@@ -7,6 +7,7 @@ import warnings
 from pandas.errors import SettingWithCopyWarning
 
 import pandas as pd
+import polars as pl
 import requests
 from openhexa.sdk import DHIS2Connection, current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
@@ -21,50 +22,63 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
 @pipeline("buu-init-vbr", name="BUU_init_VBR")
 @parameter(
-    "dhis_con",
-    type=DHIS2Connection,
-    help="Connection to DHIS2",
-    default="pbf-pmns-rdc",
-    required=True,
-)
-@parameter("hesabu_con", type=str, help="Connection to hesabu", default="hesabu", required=True)
-@parameter(
-    "program_id",
-    type=str,
-    help="Program ID for contracts",
-    default="iGORRTJbNOk",
-    required=True,
-)
-@parameter(
     "period",
-    name="period",
+    name="Period",
     type=str,
-    help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
+    help="Last month to extract data for. Format YYYYMM or YYYYQt",
     required=True,
     default="202506",
 )
 @parameter(
-    "model_name",
-    name="Name of the model",
-    type=str,
-    default="model",
-    required=True,
-)
-@parameter(
     "window",
     type=int,
-    help="Number of months to consider",
+    name="Number of months",
+    help="Number of past months to consider",
     required=True,
     default=12,
 )
-@parameter("selection_provinces", type=bool, default=True)
-@parameter("extract", name="Extraire les données", type=bool, default=True)
 @parameter(
-    "extract_verification",
-    name="Extract is_verified",
-    help="Extract the verification information from DHIS2",
+    "model_name",
+    name="Name of the initialization file",
+    help="It will be used to name the csv files and the pickle file. Choose something meaningful that you can remember",
+    type=str,
+    default="2025_h1",
+    required=True,
+)
+@parameter(
+    "selection_provinces",
+    name="Select some provinces",
+    help="Save the data only for the provinces indicated in the config file",
     type=bool,
-    default=False,
+    default=True,
+)
+@parameter(
+    "extract",
+    name="Extract all the data",
+    help="Extract all of the data, even if it is already present in the workspace",
+    type=bool,
+    default=True,
+)
+@parameter(
+    "dhis_con",
+    type=DHIS2Connection,
+    name="Connection to DHIS2 - do not change",
+    default="pbf-pmns-rdc",
+    required=True,
+)
+@parameter(
+    "hesabu_con",
+    type=str,
+    name="Connection to hesabu - do not change",
+    default="hesabu",
+    required=True,
+)
+@parameter(
+    "program_id",
+    type=str,
+    name="Program ID for contracts - do not change",
+    default="iGORRTJbNOk",
+    required=True,
 )
 def buu_init_vbr(
     dhis_con,
@@ -75,7 +89,6 @@ def buu_init_vbr(
     model_name,
     window,
     selection_provinces,
-    extract_verification,
 ):
     """Pipeline to extract the necessary data.
 
@@ -90,21 +103,19 @@ def buu_init_vbr(
     packages = fetch_hesabu_package(hesabu, packages_hesabu)
     periods = get_periods(period, window)
     contracts = fetch_contracts(dhis, program_id, model_name)
-    done_packages = get_package_values(dhis, periods, packages, contract_group_id, extract)
+    ou_list = get_package_values(dhis, periods, packages, contract_group_id, extract)
+    verification = get_actual_verification(dhis, periods, ou_list)
     quant = prepare_quantity_data(
-        done_packages,
+        ou_list,
         periods,
         packages,
         contracts,
         hesabu_params,
         extract,
         model_name,
-        dhis,
-        extract_verification,
+        verification,
     )
-    qual = prepare_quality_data(
-        done_packages, periods, packages, hesabu_params, extract, model_name
-    )
+    qual = prepare_quality_data(ou_list, periods, packages, hesabu_params, extract, model_name)
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
 
 
@@ -117,8 +128,7 @@ def prepare_quantity_data(
     hesabu_params,
     extract,
     model_name,
-    dhis,
-    extract_verification,
+    verification: pl.DataFrame,
 ):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
@@ -143,6 +153,8 @@ def prepare_quantity_data(
         If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
     model_name: str
         The name of the model. We will use it for the name of the csv file.
+    verification: df
+        It has the information on whether the centers have been verified or not.
 
     Returns
     -------
@@ -150,7 +162,8 @@ def prepare_quantity_data(
         A DataFrame containing the quantity data.
     """
     if extract:
-        data = pd.DataFrame()
+        current_run.log_info("Preparing the quantity data dataframe...")
+        list_all_data = []
         for id in packages:
             if hesabu_params["packages"][str(id)] == "quantite" and os.path.exists(
                 f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
@@ -159,19 +172,24 @@ def prepare_quantity_data(
                     if os.path.exists(
                         f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
                     ):
-                        df = pd.read_csv(
+                        df = pl.read_csv(
                             f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
                         )
-                        data = pd.concat([data, df], ignore_index=True)
+                        df = df.join(verification, on=["org_unit_id", "period"], how="left")
+                        list_all_data.append(df)
                         # data contains the actual data for the package identified with id.
                         # It has the data for all of the periods.
 
         # We are now dropping the rows where the dec = 0 or NaN.
+        data = pl.concat(list_all_data, how="diagonal").to_pandas()
+        data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(0).astype(int)
+        # There are still some NaNs -- which makes sense, there are OUs for which we have pushed no data.
         data = data[data["declaree"].notna() & (data["declaree"] != 0)]
         data = data.merge(contracts, on="org_unit_id")
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
+            + ["dhis2_is_not_verified"]
         ]
         data.rename(
             columns=hesabu_params["contracts_attributes"],
@@ -184,29 +202,19 @@ def prepare_quantity_data(
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
 
-        if extract_verification:
-            verification_list = []
-            list_periods = data["month"].unique()
-            for period in list_periods:
-                verification_period = get_verification_information(dhis, data, period)
-                verification_list.append(verification_period)
-
-            if len(verification_list) > 0:
-                verification = pd.concat(verification_list, ignore_index=True)
-                data = add_verification_information(data, verification)
-
         data["gain_verif"] = (data["dec"] - data["val"]) * data["tarif"]
         data["subside_sans_verification"] = data["dec"] * data["tarif"]
         data["subside_avec_verification"] = data["val"] * data["tarif"]
         data["quarter"] = data["month"].map(dates.month_to_quarter)
         data = rbv.calcul_ecarts(data)
 
-        if extract_verification:
-            mark_strange_verification(data, model_name)
-            data = format_data_for_verified_centers(data)
+        mark_strange_verification(data, model_name)
+        data = format_data_for_verified_centers(data)
 
+        output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
+        os.makedirs(output_path, exist_ok=True)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
+            f"{output_path}/quantity_data_{model_name}.csv",
             index=False,
         )
     else:
@@ -230,13 +238,18 @@ def mark_strange_verification(data, model):
     model: str
         The name of the model. We will use it for the name of the csv file.
     """
+    current_run.log_info(
+        "Looking at the coherence of the verification information extracted from DHIS2..."
+    )
     weird_data = []
     data_ver_val_not_verified = data[
-        (data["is_verified"] == 1) & ((data["ver"] != 0) | (data["val"] != 0))
+        (data["dhis2_is_not_verified"] == 1) & ((data["ver"] != 0) | (data["val"] != 0))
     ]
-    data_incorrect_is_verified_value = data[~data["is_verified"].isin([0, 1])]
-    verification_conflicts = data.groupby(["ou", "month"])["is_verified"].nunique().reset_index()
-    conflicting_groups = verification_conflicts[verification_conflicts["is_verified"] > 1]
+    data_incorrect_is_verified_value = data[~data["dhis2_is_not_verified"].isin([0, 1])]
+    verification_conflicts = (
+        data.groupby(["ou", "month"])["dhis2_is_not_verified"].nunique().reset_index()
+    )
+    conflicting_groups = verification_conflicts[verification_conflicts["dhis2_is_not_verified"] > 1]
 
     if data_ver_val_not_verified.shape[0] > 0:
         current_run.log_info(
@@ -245,7 +258,7 @@ def mark_strange_verification(data, model):
         weird_data.append(data_ver_val_not_verified)
     if data_incorrect_is_verified_value.shape[0] > 0:
         current_run.log_info(
-            f"There are services that have an incorrect value for is_verified: {data_incorrect_is_verified_value.shape[0]} rows"
+            f"There are services that have an incorrect value for is_not_verified: {data_incorrect_is_verified_value.shape[0]} rows"
         )
         weird_data.append(data_incorrect_is_verified_value)
     if conflicting_groups.shape[0] > 0:
@@ -265,82 +278,69 @@ def mark_strange_verification(data, model):
         )
 
 
-def get_verification_information(dhis, data, period):
+@buu_init_vbr.task
+def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pl.DataFrame:
     """
-    Extract the is_verified bool from DHIS2.
-
-    Parameters
-    ----------
-    dhis: DHIS2
-        The DHIS2 instance.
-    data: pd.DataFrame
-        The DataFrame containing the quantity data.
-    period: str
-        The relevant period.
+    Get the verification information from DHIS2 for the relevant org units and the relevant periods
 
     Returns
-    -------
-    pd.DataFrame
-        A DataFrame containing the information about the verification of centers.
-        If no information is found, an empty DataFrame is returned.
+    ------
+    pl.DataFrame:
+        Contains a row per OU and period, with information about the verification
+        (false for verified, true for not verified)
+        If the OU and period are missing, the center was verified
     """
-    list_ous = list(data[data["month"] == period]["ou"].unique())
-    period = [str(period)]
-    response = dhis.data_value_sets.get(
-        datasets=config.ds_is_verified,
-        periods=period,
-        org_units=list_ous,
+    current_run.log_info(
+        "Fetching the verification information for the relevant org units and periods..."
     )
-    if len(response) == 0:
-        current_run.log_info(f"No information about the center verification for {period}")
-        return pd.DataFrame()
-    else:
-        response = pd.DataFrame(response)
-        reponse_selected = response[
-            (response["categoryOptionCombo"] == config.coc_is_verified)
-            & (response["dataElement"] == config.de_is_verified)
-        ]
-        if len(reponse_selected) == 0:
+    param_pe = "".join([f"&period={pe}" for pe in periods])
+    chunks = {}
+    nb_org_unit_treated = 0
+    verification_rows = []
+
+    for i in range(1, len(ou_list) + 1):
+        chunks.setdefault(i // 10, []).append(ou_list[i - 1])
+
+    for i, chunk in chunks.items():
+        param_ou = "".join([f"&orgUnit={ou}" for ou in chunk])
+        url = f"dataValueSets.json?dataSet={config.ds_is_verified}{param_ou}{param_pe}"
+        res = dhis.api.get(url)
+
+        for dv in res.get("dataValues", []):
+            if dv["dataElement"] == config.de_is_verified:
+                verification_rows.append(
+                    {
+                        "org_unit_id": dv["orgUnit"],
+                        "period": dv["period"],
+                        "dhis2_is_not_verified": dv["value"],
+                    }
+                )
+
+        nb_org_unit_treated += 10
+        if nb_org_unit_treated % 1000 == 0:
             current_run.log_info(
-                f"No information about the center verification for {period} and {config.coc_is_verified}"
+                f"I have fetched the verification information for {nb_org_unit_treated} orgUnits"
             )
-            return pd.DataFrame()
-        else:
-            current_run.log_info(f"Information about the center verification for {period} found")
-            return reponse_selected
 
+    verification = pl.DataFrame(verification_rows)
+    if verification.height > 0:
+        verification = verification.with_columns(
+            [
+                pl.col("period").cast(pl.Int64),
+                pl.col("dhis2_is_not_verified").fill_null(0).cast(pl.Int64),
+            ]
+        )
 
-def add_verification_information(data, verification):
-    """
-    Add the information about the verification of centers to the data DataFrame.
+    else:
+        verification = pl.DataFrame(
+            schema={
+                "org_unit_id": pl.Utf8,
+                "period": pl.Int64,
+                "dhis2_is_not_verified": pl.Int64,
+            }
+        )
 
-    Parameters
-    ----------
-    data: pd.DataFrame
-        The DataFrame containing the quantity data.
-    verification: pd.DataFrame
-        The DataFrame containing the information about the verification of centers.
-    period: str
-        The relevant period.
-
-    Returns
-    -------
-    data: pd.DataFrame
-        The DataFrame containing the quantity data with the verification information added.
-    """
-    verification["period"] = verification["period"].astype(int)
-    data = data.merge(
-        verification[["orgUnit", "period", "value"]],
-        left_on=["ou", "month"],
-        right_on=["orgUnit", "period"],
-        how="left",
-    )
-    data = data.drop(columns=["orgUnit", "period"])
-    data = data.rename(columns={"value": "is_verified"})
-    data["is_verified"] = data["is_verified"].fillna(0)
-    data["is_verified"] = data["is_verified"].astype(int)
-    # 0 means that the center was verified.
-    return data
+    return verification
 
 
 def format_data_for_verified_centers(data):
@@ -357,7 +357,7 @@ def format_data_for_verified_centers(data):
     data: pd.DataFrame
         The DataFrame containing the quantity data with the verification information formatted.
     """
-    ser_verified_centers = data["is_verified"] == 1
+    ser_verified_centers = data["dhis2_is_not_verified"] == 1
     for col in config.null_indicators_verified_centers:
         data.loc[ser_verified_centers, col] = None
     return data
@@ -413,8 +413,10 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
         )
         data["score"] = data["num"] / data["denom"]
         data["month_final"] = data["quarter"].map(dates.quarter_to_months)
+        output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data"
+        os.makedirs(output_path, exist_ok=True)
         data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
+            f"{output_path}/quality_data_{model_name}.csv",
             index=False,
         )
     else:
@@ -503,19 +505,16 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
         current_run.log_info(f"number of orgunits= {nb_tot}")
         regions.append(group_of_ou)
 
-    if not os.path.exists(
-        f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation"
-    ):
-        os.makedirs(f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation")
+    output_path = f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation"
+    os.makedirs(output_path, exist_ok=True)
+
     with open(
-        f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle",
+        f"{output_path}/{model_name}.pickle",
         "wb",
     ) as file:
         # Serialize and save the object to the file
         pickle.dump(regions, file)
-    current_run.log_info(
-        f"Fichier d'initialisation sauvé: {workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle"
-    )
+    current_run.log_info(f"Fichier d'initialisation sauvé: {output_path}/{model_name}.pickle")
     return regions
 
 
@@ -682,14 +681,13 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
         A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
     contract_group: str
         The contract ID.
-    extract: bool
-        If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
 
     Returns
     -------
-    bool:
-        We indicate that the process has finished.
+    full_list_ous:
+        A list with all of the organizational Units we need to extract data for.
     """
+    full_list_ous = []
     if extract:
         for package_id in hesabu_packages:
             # We iterate over each of the packages we want to extract.
@@ -708,6 +706,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
             # Here, we input the contract ID, the package that we are interested in and the DHIS2 connection.
             # We output a set of IDs of the organization units that we need to look at.
             org_unit_ids = list(org_unit_ids)
+            full_list_ous.extend(org_unit_ids)
             current_run.log_info(
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
@@ -725,7 +724,17 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 # the periods we are interested in, the activities we are interested in and the package ID.
                 # We output a CSV file for each of the packages and each of the periods.
 
-    return True
+    else:
+        # We only need the organizational units
+        for package_id in hesabu_packages:
+            package = hesabu_packages[package_id]["content"]
+            org_unit_ids = data_extraction.get_org_unit_ids_from_hesabu(
+                contract_group, package, dhis
+            )
+            org_unit_ids = list(org_unit_ids)
+            full_list_ous.extend(org_unit_ids)
+    full_list_ous = list(set(full_list_ous))
+    return full_list_ous
 
 
 @buu_init_vbr.task
@@ -785,8 +794,10 @@ def fetch_contracts(dhis, contract_program_id, model_name):
         records.append(record)
 
     records_df = pd.DataFrame(records)
+    output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts"
+    os.makedirs(output_path, exist_ok=True)
     records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
+        f"{output_path}/contracts_{model_name}.csv",
         index=False,
     )
     return records_df
