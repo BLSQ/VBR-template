@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "nom_init",
     name="Name of the initialization file",
     help="It comes from the first pipeline",
-    default="model",
+    default="test",
     type=str,
     required=True,
 )
@@ -42,14 +42,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="If frequency = quarter: put a month that is part of the quarter",
-    default=11,
+    default=6,
 )
 @parameter(
     "year_start",
     name="Start year for the simulation",
     type=int,
     choices=[2023, 2024, 2025],
-    default=2024,
+    default=2025,
 )
 @parameter(
     "mois_fin",
@@ -57,14 +57,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="If frequency = quarter: put a month that is part of the quarter",
-    default=12,
+    default=7,
 )
 @parameter(
     "year_fin",
     name="End year for the simulation",
     type=int,
     choices=[2023, 2024, 2025],
-    default=2024,
+    default=2025,
 )
 @parameter(
     "frequence",

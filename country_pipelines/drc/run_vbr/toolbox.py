@@ -50,6 +50,7 @@ def get_statistics(self, period):
         The statistics for the period and Group of Organizational Units.
     """
     verified_centers = self.df_verification.bool_verified_simulation
+    verified_centers_dhis2 = ~self.df_verification.bool_not_verified_dhis2
     vbr_beneficial = self.df_verification["benefice_complet_vbr"] < 0
 
     nb_centers = len(self.members)
@@ -63,15 +64,23 @@ def get_statistics(self, period):
     low_risk = len([ou.id for ou in self.members if ou.risk == "low"])
 
     cost_verification_vbr = self.cout_verification_centre * nb_centers_verified
+    cost_verification_vbr_dhis = self.cout_verification_centre * (
+        nb_centers - nb_centers_not_verified_dhis2
+    )
     cost_verification_syst = self.cout_verification_centre * nb_centers
 
     subsides_vbr = (
         self.df_verification[verified_centers]["subside_val_period"].sum()
         + self.df_verification[~verified_centers]["subside_taux_period"].sum()
     )
+    subsidies_vbr_dhis2 = (
+        self.df_verification[verified_centers_dhis2]["subside_val_period"].sum()
+        + self.df_verification[~verified_centers_dhis2]["subside_taux_period"].sum()
+    )
     subsides_syst = self.df_verification["subside_val_period"].sum()
 
     cout_total_vbr = subsides_vbr + cost_verification_vbr
+    cout_total_vbr_dhis = subsidies_vbr_dhis2 + cost_verification_vbr_dhis
     cout_total_syst = subsides_syst + cost_verification_syst
 
     ratio_verif_costtotal_vbr = cost_verification_vbr / cout_total_vbr
@@ -109,10 +118,13 @@ def get_statistics(self, period):
         nb_centers_verified,
         nb_centers_not_verified_dhis2,
         cost_verification_vbr,
+        cost_verification_vbr_dhis,
         cost_verification_syst,
         subsides_vbr,
+        subsidies_vbr_dhis2,
         subsides_syst,
         cout_total_vbr,
+        cout_total_vbr_dhis,
         cout_total_syst,
         ratio_verif_costtotal_vbr,
         ratio_verif_costtotal_syst,
