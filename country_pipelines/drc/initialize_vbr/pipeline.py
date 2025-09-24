@@ -35,14 +35,14 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     name="Number of months",
     help="Number of past months to consider",
     required=True,
-    default=12,
+    default=9,
 )
 @parameter(
     "model_name",
     name="Name of the initialization file",
     help="It will be used to name the csv files and the pickle file. Choose something meaningful that you can remember",
     type=str,
-    default="2025_h1",
+    default="test",
     required=True,
 )
 @parameter(
@@ -210,6 +210,8 @@ def prepare_quantity_data(
 
         mark_strange_verification(data, model_name)
         data = format_data_for_verified_centers(data)
+        data = data.drop_duplicates()
+        # There are duplicate rows -- in Hesabu, we have some services assigned to two packages.
 
         output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
         os.makedirs(output_path, exist_ok=True)
@@ -343,7 +345,7 @@ def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pl.Dat
     return verification
 
 
-def format_data_for_verified_centers(data):
+def format_data_for_verified_centers(data) -> pd.DataFrame:
     """
     For verified centers, we don't want to take into account the data.
 
