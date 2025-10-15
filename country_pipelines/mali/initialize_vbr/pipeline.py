@@ -3,72 +3,79 @@
 import json
 import os
 import pickle
-import warnings
-from pandas.errors import SettingWithCopyWarning
 
 import pandas as pd
+import polars as pl
 import requests
 from openhexa.sdk import DHIS2Connection, current_run, parameter, pipeline, workspace
 from openhexa.toolbox.dhis2 import DHIS2
+from pathlib import Path
+from openhexa.toolbox.dhis2.dataframe import get_organisation_units
+from openhexa.toolbox.dhis2.periods import Month
+
 
 from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
-import config
+from toolbox import save_csv, save_json, load_json, get_date_series, extract_dataset, calcul_ecarts
+import orgunit
 
-warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
-
-@pipeline("BUU_init_VBR")
+@pipeline("initialize_vbr")
+@parameter(
+    "period",
+    name="Last period",
+    type=str,
+    help="Last period to extract data from (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
+    required=True,
+    default="202509",
+)
+@parameter(
+    "window",
+    name="Number of months to consider",
+    type=int,
+    required=True,
+    default=6,
+)
+@parameter("model_name", name="Name of the model", type=str, default="model_full", required=True)
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
     help="Connection to DHIS2",
-    default="pbf-burundi",
+    default="pbf-mali-blsq",
     required=True,
 )
 @parameter("hesabu_con", type=str, help="Connection to hesabu", default="hesabu", required=True)
 @parameter(
-    "program_id",
-    type=str,
-    help="Program ID for contracts",
-    default="okgPNNENgtD",
-    required=True,
-)
-@parameter(
-    "period",
-    name="period",
-    type=str,
-    help="Period for the verification (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
-    required=True,
-    default="202501",
-)
-@parameter("model_name", name="Name of the model", type=str, default="model", required=True)
-@parameter(
-    "window",
-    type=int,
-    help="Number of months to consider",
-    required=True,
-    default=25,
-)
-@parameter("selection_provinces", type=bool, default=False)
-@parameter(
-    "clean_data",
-    help="If true, weird quantite values will be discarded in the pickle file",
+    "selection_provinces",
+    name="Selection provinces",
+    help="Save only the results coming from some provinces",
     type=bool,
-    default=True,
+    default=False,
 )
-@parameter("extract", name="Extraire les données", type=bool, default=True)
-def buu_init_vbr(
+@parameter(
+    "extract",
+    name="Extract data",
+    help="Extract all of the data, no matter if it is already there",
+    type=bool,
+    default=False,
+)
+@parameter(
+    "bool_hesabu_construct",
+    name="Construct the Hesabu descriptor",
+    help="Construct the Hesabu descriptor from the Hesabu instance",
+    type=bool,
+    default=False,
+)
+def initialize_vbr(
+    period,
+    window,
+    model_name,
     dhis_con,
     hesabu_con,
-    program_id,
-    period,
-    extract,
-    model_name,
-    window,
     selection_provinces,
-    clean_data,
+    extract,
+    bool_hesabu_construct,
 ):
     """Pipeline to extract the necessary data.
 
@@ -77,59 +84,762 @@ def buu_init_vbr(
     """
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
-    hesabu_params = get_hesabu_vbr_setup()
-    packages_hesabu = get_hesabu_package_ids(hesabu_params)
-    contract_group_id = get_contract_group_unit_id(hesabu_params)
-    packages = fetch_hesabu_package(hesabu, packages_hesabu)
-    adaptaged_packages = adapt_hesabu_packages(packages)
-    periods = get_periods(period, window)
-    contracts = fetch_contracts(dhis, program_id, model_name)
-    done = get_package_values(dhis, periods, adaptaged_packages, contract_group_id, extract)
-    quant_full = prepare_quantity_data(
-        done, periods, packages, contracts, hesabu_params, extract, model_name
+    setup = get_setup()
+    hesabu_descriptor = fetch_hesabu_descriptor(
+        hesabu, setup["hesabu_project_id"], bool_hesabu_construct
     )
-    quant = clean_quant_data(quant_full, clean_data, model_name)
-    qual = prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name)
-    save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+    ous_ref = get_organisation_units(dhis)
+    config_extraction = construct_config_extraction(
+        dhis, bool_hesabu_construct, hesabu_descriptor, ous_ref
+    )
+    periods = get_periods_dict(period, window)
+    data_elements_ids = construct_de_df(hesabu_descriptor, bool_hesabu_construct)
+    values_to_use = extract_data_values(
+        dhis, config_extraction, periods, data_elements_ids, extract, ous_ref
+    )
+    contracts = fetch_contracts(dhis, setup["dhis2_program_id"], model_name, extract)
+    quant = prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name)
+    save_simulation_environment(quant, setup, model_name, selection_provinces)
 
 
-@buu_init_vbr.task
-def adapt_hesabu_packages(packages):
+def divide_indicators_by_frequency(payment_dict):
     """
-    We add the new declared values per payment mode to the hesabu packages.
+    Divide the indicators in the config dictionary by frequency.
 
     Parameters
     ----------
-    packages: dict
-        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
+    config: dict
+        The configuration dictionary.
 
     Returns
     -------
-    packages: dict
-        The packages with the new declared values per payment mode.
+    dict:
+        A dictionary mapping frequencies to lists of indicators.
     """
-    for package_id in packages:
-        for index, activity in enumerate(packages[package_id]["content"]["activities"]):
-            if "declaree_indiv" in activity["inputMappings"].keys():
-                externalReference = packages[package_id]["content"]["activities"][index][
-                    "inputMappings"
-                ]["declaree_indiv"]["externalReference"].split(".")[0]
-                name = packages[package_id]["content"]["activities"][index]["inputMappings"][
-                    "declaree_indiv"
-                ]["name"]
+    dict_frequency = {}
+    for indicator, indicator_dict in payment_dict.items():
+        frequency = indicator_dict["freq"]
+        if frequency not in dict_frequency:
+            dict_frequency[frequency] = []
+        dict_frequency[frequency].append(indicator)
 
-                for dec, coc in config.category_options_per_dec.items():
-                    packages[package_id]["content"]["activities"][index]["inputMappings"][dec] = {
-                        "externalReference": externalReference,
-                        "name": name,
-                        "categoryOptionCombo": coc,
+    if "Quarterly" not in dict_frequency.keys():
+        raise ValueError(
+            "There are no indicators with quarterly frequency. This code is not prepared to handle this"
+        )
+
+    return dict_frequency
+
+
+def aggregate_monthly_indicator(data, quarter, indicator, payment_mode):
+    """
+    Concatenate monthly indicator files into a single DataFrame for a specific quarter.
+    We sum the values for the indicator.
+
+    Parameters
+    ----------
+    list_months: list
+        The list of months we will group together
+    base_path: str
+        The base path where the CSV files are located.
+    indicator: str
+        The name of the indicator. (declare, valide, etc.)
+    quarter: str
+        The quarter we are working on (e.g. 2024Q2)
+    ous_ref: pl.DataFrame
+        A DataFrame containing the organisational unit pyramid.
+
+    Returns
+    -------
+    pl.DataFrame:
+        A DataFrame containing the concatenated and summed data for the specified indicator and quarter.
+    """
+    mod_df = data.select(
+        pl.col("value").alias(indicator).cast(pl.Float64),
+        pl.col("organisation_unit_id"),
+        pl.col("service"),
+        pl.lit(payment_mode).alias("payment_mode"),
+    )
+
+    monthly_df = (
+        mod_df.group_by(["organisation_unit_id", "service", "payment_mode"])
+        .agg(pl.sum(indicator).alias(indicator))
+        .with_columns(pl.lit(str(quarter)).alias("quarter"))
+    )
+
+    return monthly_df
+
+
+def add_extra_levels(df, ous):
+    """
+    The tarif is in the country level, but we have
+
+    Parameters
+    ----------
+    df: pl.DataFrame
+        A DataFrame containing the data for the specified indicator and quarter.
+    ous: pl.DataFrame
+        A DataFrame containing the organisational unit pyramid.
+
+    Returns
+    -------
+    pl.DataFrame:
+        A DataFrame containing the data for the specified indicator and quarter at level_5.
+    """
+    all_ous = df.select("organisation_unit_id").unique()
+    all_ous = all_ous.join(ous, how="left", left_on="organisation_unit_id", right_on="id")
+    ous_to_change = all_ous.filter(~pl.col("level").is_in([3, 4, 5, 6]))
+
+    if ous_to_change.height > 0:
+        current_run.log_info(
+            f"There are {ous_to_change.height} organisation units that are not at level 3, 4, 5 or 6."
+            "(for tarifs). I will merge the lower levels to them."
+        )
+        list_bad_ous = ous_to_change.select("organisation_unit_id").to_series().to_list()
+        for ou in list_bad_ous:
+            current_level = (
+                ous_to_change.filter(pl.col("organisation_unit_id") == ou)
+                .select("level")
+                .to_series()[0]
+            )
+            current_level_col = f"level_{current_level}_id"
+            for level_to_append in [3, 4, 5, 6]:
+                level_to_append_col = f"level_{level_to_append}_id"
+                relevant = (
+                    ous.filter(
+                        (pl.col(current_level_col) == ou)
+                        & (pl.col(level_to_append_col).is_not_null())
+                    )
+                    .select([current_level_col, level_to_append_col])
+                    .unique()
+                )
+                if relevant.height == 0:
+                    continue
+
+                df = df.join(
+                    relevant,
+                    how="left",
+                    left_on="organisation_unit_id",
+                    right_on=current_level_col,
+                )
+                df = df.with_columns(
+                    pl.when(pl.col("organisation_unit_id") == ou)
+                    .then(pl.col(level_to_append_col))
+                    .otherwise(pl.col("organisation_unit_id"))
+                    .alias("organisation_unit_id")
+                ).drop([level_to_append_col])
+
+    return df
+
+
+def format_quarterly_indicator(data, indicator, payment_mode):
+    """
+    Get the quarterly indicator file as a DataFrame.
+
+    Parameters
+    ----------
+    base_path: str
+        The base path where the CSV files are located.
+    indicator: str
+        The name of the indicator. (declare, valide, etc.)
+    quarter: str
+        The quarter we are working on (e.g. 2024Q2)
+    ous_ref: pl.DataFrame
+        A DataFrame containing the organisational unit pyramid.
+
+    Returns
+    -------
+    pl.DataFrame:
+        A DataFrame containing the data for the specified indicator and quarter.
+    """
+    mod_df = data.select(
+        pl.col("value").alias(indicator),
+        pl.col("organisation_unit_id"),
+        pl.col("service"),
+        pl.col("period").alias("quarter"),
+        pl.lit(payment_mode).alias("payment_mode"),
+    )
+
+    return mod_df
+
+
+def change_data_values(present_indicators, ous_ref, quarter, payment_mode, data_elements_codes):
+    """
+    Adapt the declared, validated and tarif_def data values.
+
+    Parameters
+    ----------
+    config: dict
+        The configuration dictionary.
+    dict_periods: dict
+        A dictionary mapping frequencies to periods.
+
+    Returns
+    -------
+    list:
+        A list of DataFrames containing the adapted data values.
+    """
+    data_to_concat = {}
+
+    for indicator, indicator_dict in present_indicators.items():
+        data = indicator_dict["data"]
+        frequency = indicator_dict["frequency"]
+
+        data = add_services(data, data_elements_codes, payment_mode, indicator)
+
+        if frequency == "Monthly":
+            monthly_df = aggregate_monthly_indicator(data, quarter, indicator, payment_mode)
+            data_to_concat[indicator] = monthly_df
+
+        elif frequency == "Quarterly":
+            quarterly_df = format_quarterly_indicator(data, indicator, payment_mode)
+            data_to_concat[indicator] = quarterly_df
+
+        else:
+            raise ValueError(f"Frequency {frequency} not recognized for indicator {indicator}.")
+
+    return data_to_concat
+
+
+def join_data_values(data_to_concat):
+    declare = data_to_concat["declare"]
+    valide = data_to_concat["valide"]
+    tarif_def = data_to_concat["tarif_def"]
+
+    merged = declare.join(
+        valide,
+        on=["organisation_unit_id", "service", "quarter"],
+        how="full",
+    )
+
+    nulls_declare = merged["declare"].is_null()
+    if nulls_declare.any():
+        nulls_count = merged.filter(nulls_declare).height
+        total_count = merged.height
+        current_run.log_warning(
+            f"There are {100 * nulls_count / total_count:.2f}% rows that had filled "
+            "validated values but not declared values. This is not necessarily very bad,"
+            ", I will fill them with zeros"
+        )
+        merged = merged.with_columns(
+            pl.when(pl.col("declare").is_null())
+            .then(0)
+            .otherwise(pl.col("declare"))
+            .alias("declare"),
+            pl.when(pl.col("declare").is_null())
+            .then(pl.col("organisation_unit_id_right"))
+            .otherwise(pl.col("organisation_unit_id"))
+            .alias("organisation_unit_id"),
+            pl.when(pl.col("declare").is_null())
+            .then(pl.col("quarter_right"))
+            .otherwise(pl.col("quarter"))
+            .alias("quarter"),
+            pl.when(pl.col("declare").is_null())
+            .then(pl.col("service_right"))
+            .otherwise(pl.col("service"))
+            .alias("service"),
+            pl.when(pl.col("declare").is_null())
+            .then(pl.col("payment_mode_right"))
+            .otherwise(pl.col("payment_mode"))
+            .alias("payment_mode"),
+        ).drop(
+            ["organisation_unit_id_right", "service_right", "quarter_right", "payment_mode_right"]
+        )
+    else:
+        merged = merged.drop(
+            ["organisation_unit_id_right", "service_right", "quarter_right", "payment_mode_right"]
+        )
+
+    nulls_valide = merged["valide"].is_null()
+    if nulls_valide.any():
+        nulls_count = merged.filter(nulls_valide).height
+        total_count = merged.height
+        current_run.log_warning(
+            f"There are {100 * nulls_count / total_count:.2f}% rows that had declared values"
+            " but not validated values. This is not necessarily very bad,"
+            ", I will fill them with zeros"
+        )
+        merged = merged.with_columns(
+            pl.when(pl.col("valide").is_null()).then(0).otherwise(pl.col("valide")).alias("valide"),
+        )
+
+    full_merged = merged.join(
+        tarif_def,
+        on=["service", "quarter"],
+        how="left",
+    ).drop(["organisation_unit_id_right", "payment_mode_right"])
+
+    nulls_tarif = full_merged["tarif_def"].is_null()
+    if nulls_tarif.any():
+        nulls_count = full_merged.filter(nulls_tarif).height
+        total_count = full_merged.height
+        current_run.log_warning(
+            f"There are {100 * nulls_count / total_count:.2f}% rows that do not have a tarif_def."
+            " This is not good, as we will not be able to calculate the subsidies for these rows."
+            " I will drop them."
+        )
+        full_merged = full_merged.filter(~nulls_tarif)
+
+    return full_merged
+
+
+def construct_config_extraction(dhis, bool_hesabu_construct, hesabu_descriptor, ous_ref):
+    """
+    Construct the configuration dictionary that will allow us to extract all of the relevant data from DHIS2.
+
+    Parameters
+    ----------
+    dhis: DHIS2
+        Connection to the DHIS2 instance.
+    bool_hesabu_construct: bool
+        If True, construct the Hesabu descriptor from the Hesabu instance.
+        If False, read it from the file config_extraction.json.
+    hesabu_descriptor: dict
+        The Hesabu descriptor.
+    ous_ref: pl.DataFrame
+        The Organisational Unit pyramid
+
+    Returns
+    -------
+
+    """
+    path_output = f"{workspace.files_path}/pipelines/initialize_vbr/config/config_extraction.json"
+
+    if os.path.exists(path_output) and not bool_hesabu_construct:
+        current_run.log_info(f"Reading config_extraction from {path_output}.")
+        config_extraction = load_json(Path(path_output))
+        return config_extraction
+
+    current_run.log_info("Constructing config_extraction from Hesabu descriptor.")
+    datasets_dataelements = get_all_datasets_with_dataelements(dhis)
+    config_extraction = init_config_extraction(hesabu_descriptor, datasets_dataelements)
+    config_extraction = check_config(config_extraction)
+    ous_accessible = accessible_orgunits(dhis, ous_ref)
+    config_extraction = add_metadata_to_config(config_extraction, dhis, ous_accessible)
+
+    save_json(config_extraction, Path(path_output))
+
+    return config_extraction
+
+
+def add_services(data_values, data_elements_codes, payment_mode, indicator):
+    relevant_data_element_codes = data_elements_codes.filter(pl.col("payment_type") == payment_mode)
+    data_values = data_values.join(
+        relevant_data_element_codes,
+        left_on=["data_element_id"],
+        right_on=[indicator],
+        how="left",
+    )
+    null_services = data_values["service"].is_null()
+    if null_services.any():
+        null_services_count = (
+            data_values.filter(null_services).select("data_element_id").unique().height
+        )
+        total_services = data_values.select("data_element_id").unique().height
+        current_run.log_warning(
+            f"For the payment {payment_mode} and indicator {indicator},"
+            f" {null_services_count} out of {total_services} data elements "
+            "did not appear in the hesabu config."
+            " I will not take them into account."
+        )
+        data_values = data_values.filter(~null_services)
+
+    return data_values
+
+
+def extract_data_values(dhis, config, dict_periods, data_elements_codes, extract, ous_ref):
+    """
+    Extract the data from DHIS2 and save it in CSV files.
+    We save a file per payment mode, indicator and period.
+
+    Parameters
+    ----------
+    dhis: DHIS2
+        Connection to the DHIS2 instance.
+    config: dict
+        The configuration dictionary.
+    dict_periods: dict
+        A dictionary mapping frequencies to periods.
+    data_elements_codes: pl.DataFrame
+        A DataFrame containing the data elements codes.
+    extract: bool
+        If True, extract all the data from DHIS2. If False, try using the existing CSV files.
+    ous_ref: pl.DataFrame
+        A DataFrame containing the organisational unit pyramid.
+
+    Returns
+    -------
+    dict:
+        A dictionary mapping payment modes to lists of quarters for which data was successfully extracted.
+    """
+    quarters = dict_periods["Quarterly"]
+    relevant_payment_quarters = {}
+    for payment_mode, payment_dict in config.items():
+        for quarter in quarters:
+            output_file = f"{workspace.files_path}/pipelines/initialize_vbr/packages/{payment_mode}/{quarter}.csv"
+            if os.path.exists(output_file) and not extract:
+                current_run.log_info(
+                    f"Data for {payment_mode} in {quarter} already extracted. Skipping."
+                )
+                if payment_mode not in relevant_payment_quarters:
+                    relevant_payment_quarters[payment_mode] = []
+                relevant_payment_quarters[payment_mode].append(quarter)
+                continue
+            else:
+                current_run.log_info(f"Dealing with data for {payment_mode} in {quarter}.")
+                present_indicators = extract_data_values_for_quarter_and_payment(
+                    dict_periods["Linking"][str(quarter)],
+                    str(quarter),
+                    payment_mode,
+                    payment_dict,
+                    dhis,
+                    extract,
+                )
+                if {"declare", "valide", "tarif_def"}.issubset(set(present_indicators.keys())):
+                    data_to_concat = change_data_values(
+                        present_indicators, ous_ref, quarter, payment_mode, data_elements_codes
+                    )
+                    merged = join_data_values(data_to_concat)
+                    save_csv(merged, Path(output_file))
+                    if payment_mode not in relevant_payment_quarters:
+                        relevant_payment_quarters[payment_mode] = []
+                    relevant_payment_quarters[payment_mode].append(quarter)
+                else:
+                    current_run.log_warning(
+                        f"Only {', '.join(present_indicators.keys())} were present. I will not work with this."
+                    )
+
+    return relevant_payment_quarters
+
+
+def extract_data_value_for_indicator_quarter_and_payment(
+    dhis, list_months, quarter, indicator, indicator_dict
+):
+    dataset_id = indicator_dict["data_set_id"]
+    ou_id_request = indicator_dict["ou_list"]
+    frequency = indicator_dict["freq"]
+    if frequency == "Monthly":
+        periods_to_extract = list_months
+    elif frequency == "Quarterly":
+        periods_to_extract = [quarter]
+    else:
+        raise ValueError(f"Frequency {frequency} not recognized for indicator {indicator}.")
+
+    data_values = extract_dataset(
+        dhis2=dhis, dataset=dataset_id, periods=periods_to_extract, org_units=ou_id_request
+    )
+    return data_values
+
+
+def extract_data_values_for_quarter_and_payment(
+    list_months, quarter, payment_mode, payment_dict, dhis, extract
+):
+    present_indicators = {}
+    for indicator, indicator_dict in payment_dict.items():
+        folder_path = f"{workspace.files_path}/pipelines/initialize_vbr/packages/{payment_mode}"
+        name = f"{indicator}_{quarter}.csv"
+        output_file = f"{folder_path}/{name}"
+        os.makedirs(folder_path, exist_ok=True)
+
+        if os.path.exists(output_file) and not extract:
+            data_values = pl.read_csv(output_file)
+        else:
+            data_values = extract_data_value_for_indicator_quarter_and_payment(
+                dhis, list_months, quarter, indicator, indicator_dict
+            )
+            if len(data_values) > 0:
+                data_values.write_csv(output_file)
+
+        if len(data_values) > 0:
+            new_dict = {"data": data_values, "frequency": indicator_dict["freq"]}
+            present_indicators[indicator] = new_dict
+
+    return present_indicators
+
+
+def accessible_orgunits(dhis, ous_ref):
+    """
+    From a list of all of the organization units, find the ones that the user has access to.
+
+    Parameters
+    ----------
+    dhis: DHIS2
+        Connection to the DHIS2 instance.
+    ous_ref: pl.DataFrame
+        A DataFrame containing all of the organization units.
+
+    Returns
+    -------
+    list:
+        A list of organization units that the user has access to.
+    """
+    params = {"fields": "organisationUnits"}
+    response = dhis.api.get("me", params=params)
+    accessible_orgunit_ids = list(ou["id"] for ou in response.get("organisationUnits", []))
+    ous = ous_ref.filter(
+        pl.col("level_1_id").is_in(accessible_orgunit_ids)
+        | pl.col("level_2_id").is_in(accessible_orgunit_ids)
+    )
+    result = ous.select("id").unique().to_series().to_list()
+    return result
+
+
+def add_metadata_to_config(config, dhis, ous_accessible):
+    """
+    Add to the config dictionary the list of organization units and the frequency of each of the indicators.
+
+    Parameters
+    ----------
+    config: dict
+        The configuration dictionary to update.
+    dhis: DHIS2
+        Connection to the DHIS2 instance.
+    ous_accessible: list
+        List of organization units that the user has access to.
+
+    Returns
+    -------
+    dict:
+        The updated configuration dictionary with the list of organization units and frequency for each indicator.
+    """
+    for payment_mode, payment_dict in config.items():
+        for indicator, indicator_dict in payment_dict.items():
+            dataset_id = indicator_dict["data_set_id"]
+            params = {"fields": "periodType,name,organisationUnits"}
+            response = dhis.api.get(f"dataSets/{dataset_id}.json", params=params)
+            ou_id_dataset = [ou["id"] for ou in response["organisationUnits"]]
+            indicator_dict["ou_list"] = [
+                ou_id for ou_id in ou_id_dataset if ou_id in ous_accessible
+            ]
+            indicator_dict["freq"] = response["periodType"]
+            payment_dict[indicator] = indicator_dict
+        config[payment_mode] = payment_dict
+
+    return config
+
+
+def check_config(config):
+    """
+    Check that the config dictionary contains the necessary keys for each payment mode.
+
+    Parameters
+    ----------
+    config: dict
+        The configuration dictionary to check.
+
+    Returns
+    -------
+    dict:
+        The validated configuration dictionary with invalid payment modes removed.
+    """
+    required_keys = ["declare", "valide", "tarif_def"]
+    invalid_modes = []
+
+    for payment_mode, payment_dict in config.items():
+        if not all(k in payment_dict for k in required_keys):
+            current_run.log_warning(
+                f"I will not take the payment mode {payment_mode} into account"
+                " because it does not have all of the necessary keys."
+            )
+            invalid_modes.append(payment_mode)
+
+    for mode in invalid_modes:
+        del config[mode]
+
+    return config
+
+
+def find_dataset_for_dataelements(de_codes, dataset_map):
+    """
+    From a list of dataEelements ids, find the dataset id that contains all of them.
+
+    Parameters
+    ----------
+    de_codes: list
+        A list of dataElements ids.
+    dataset_map: dict
+        A dictionary that links each dataset id to the dataElements ids it contains.
+
+    Returns
+    -------
+    str:
+        The id of the dataset that contains all of the dataElements ids.
+
+    Raises
+    ------
+    ValueError:
+        If no dataset contains all of the dataElements ids or if multiple datasets do.
+    """
+    matching_datasets = []
+
+    for ds_id, codes in dataset_map.items():
+        if all(code in codes for code in de_codes):
+            matching_datasets.append(ds_id)
+
+    if len(matching_datasets) == 0:
+        current_run.log_error(f"No dataset contains all of the dataElements ids: {de_codes}")
+        raise ValueError(f"No dataset contains all of the dataElements ids: {de_codes}")
+    elif len(matching_datasets) > 1:
+        current_run.log_error(
+            f"Multiple datasets contain all of the dataElements ids: {de_codes}. Datasets: {matching_datasets}"
+        )
+        raise ValueError(
+            f"Multiple datasets contain all of the dataElements ids: {de_codes}. Datasets: {matching_datasets}"
+        )
+
+    return matching_datasets[0]
+
+
+def get_all_datasets_with_dataelements(dhis2):
+    """Construct a dictionary that links each dataset id to the dataElements ids it contains.
+
+    Parameters
+    ----------
+    dhis2: DHIS2
+        Connection to the DHIS2 instance.
+
+    Returns
+    -------
+    dict:
+        A dictionary that links each dataset id to the dataElements ids it contains.
+    """
+    endpoint = "dataSets.json"
+    params = {"fields": "id,dataSetElements[dataElement[id]]", "paging": "false"}
+
+    data = dhis2.api.get(endpoint, params=params)
+    datasets = data.get("dataSets", [])
+
+    dataset_map = {}
+
+    for dataset in datasets:
+        dataset_id = dataset["id"]
+        codes = []
+        for dataelement in dataset["dataSetElements"]:
+            code = dataelement["dataElement"]["id"]
+            if code:
+                codes.append(code)
+        dataset_map[dataset_id] = codes
+
+    return dataset_map
+
+
+def init_config_extraction(descriptor, datasets_dataelements):
+    """
+    From the hesabu descriptor, construct a dictionary that allows us to extract
+    all of the relevant data from DHIS2.
+
+    Parameters
+    ----------
+    descriptor: dict
+        The Hesabu descriptor.
+    datasets_dataelements: dict
+        A dictionary that links each dataElement id to the dataset id it belongs to.
+
+    Returns
+    -------
+    dict:
+        A dictionary that allows us to extract all of the relevant data from DHIS2.
+    """
+    config = {}
+    for payment_type, payment_type_dict in descriptor["payment_rules"].items():
+        payment_dict = {}
+        for package_name, package_dict in payment_type_dict["packages"].items():
+            if "quantite" in package_name:
+                for indicator in ["declare", "valide", "tarif_def"]:
+                    indicator_dict = {}
+                    list_de = []
+                    list_activities = package_dict["activities"]
+                    for activity in list_activities:
+                        list_de.append(activity[indicator])
+                    data_set_id = find_dataset_for_dataelements(list_de, datasets_dataelements)
+                    indicator_dict["data_set_id"] = data_set_id
+                    payment_dict[indicator] = indicator_dict
+        config[payment_type] = payment_dict
+    return config
+
+
+def construct_de_df(descriptor, bool_hesabu_construct):
+    """ "
+    Construct a dictionary that links each service name and payment type
+    to the dataElements ids for declare, tarif_def and valide in DHIS2.
+
+    Parameters
+    ----------
+    descriptor: dict
+        The Hesabu descriptor.
+    bool_hesabu_construct: bool
+        If True, construct the Hesabu descriptor from the Hesabu instance.
+
+    Returns
+    -------
+    pl.DataFrame
+        A DataFrame containing the mapping between service names, payment types and dataElements ids.
+    """
+    path_output = f"{workspace.files_path}/pipelines/initialize_vbr/config/data_elements_codes.csv"
+    if os.path.exists(path_output) and not bool_hesabu_construct:
+        return pl.read_csv(path_output)
+
+    list_rows = []
+    for payment_type, payment_type_dict in descriptor["payment_rules"].items():
+        for package_name, package_dict in payment_type_dict["packages"].items():
+            if "quantite" in package_name:
+                for activity in package_dict["activities"]:
+                    new_dict = {
+                        "payment_type": payment_type,
+                        "service": activity["name"],
+                        "declare": activity["declare"],
+                        "tarif_def": activity["tarif_def"],
+                        "valide": activity["valide"],
                     }
+                    list_rows.append(new_dict)
 
-    return packages
+    save_csv(pl.DataFrame(list_rows), Path(path_output))
+
+    return pl.DataFrame(list_rows)
 
 
-@buu_init_vbr.task
-def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, extract, model_name):
+def fetch_hesabu_descriptor(hesabu, project_id, bool_hesabu_construct):
+    """
+    Get the Hesabu descriptor associated to a particular project_id.
+
+    Parameters
+    ----------
+    hesabu: HesabuConnection
+        The connection to Hesabu.
+    project_id: str
+        The ID of the project.
+    bool_hesabu_construct: bool
+        If True, construct the Hesabu descriptor from the Hesabu instance.
+
+    Returns
+    -------
+    dict
+        The Hesabu descriptor.
+    """
+    path_output = f"{workspace.files_path}/pipelines/initialize_vbr/config/hesabu_descriptor.json"
+    if os.path.exists(path_output) and not bool_hesabu_construct:
+        current_run.log_info(f"Reading hesabu_descriptor from {path_output}.")
+        hesabu_payload = load_json(Path(path_output))
+        return hesabu_payload
+
+    current_run.log_info("Fetching hesabu_descriptor from Hesabu instance.")
+    headers = {
+        "Accept": "application/vnd.api+json;version=2",
+        "Accept-Language": "en-US",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "X-Token": hesabu.token,
+        "X-Dhis2UserId": hesabu.dhis2_user_id,
+    }
+    url = f"{hesabu.url.rstrip('/sets')}/descriptors/{project_id}"
+    response = requests.get(url, headers=headers)
+    hesabu_payload = response.json()
+
+    save_json(hesabu_payload, Path(path_output))
+
+    return hesabu_payload
+
+
+def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name):
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -151,131 +861,181 @@ def prepare_quantity_data(done, periods, packages, contracts, hesabu_params, ext
         Contains the information we want to extract from Hesabu.
     extract: bool
         If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
-    model_name: str
-        The name of the model. We will use it for the name of the csv file.
 
     Returns
     -------
     data: pd.DataFrame
         A DataFrame containing the quantity data.
     """
-    if extract:
-        data = pd.DataFrame()
-        for id in packages:
-            if hesabu_params["packages"][str(id)] == "quantite" and os.path.exists(
-                f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
-            ):
-                for p in periods:
-                    if os.path.exists(
-                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
-                    ):
-                        df = pd.read_csv(
-                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{p}.csv"
-                        )
-                        data = pd.concat([data, df], ignore_index=True)
-                        # data contains the actual data for the package identified with id.
-                        # It has the data for all of the periods.
+    dfs = []
+    for payment, list_periods in values_to_use.items():
+        for period in list_periods:
+            file_path = (
+                f"{workspace.files_path}/pipelines/initialize_vbr/packages/{payment}/{period}.csv"
+            )
+            if os.path.exists(file_path):
+                df = pl.read_csv(file_path)
+                dfs.append(df)
+            else:
+                raise FileNotFoundError(f"File {file_path} not found.")
 
-        # We are now dropping the rows where the dec = 0 or NaN.
-        data = data.merge(contracts, on="org_unit_id")
-        data = data[
-            list(hesabu_params["quantite_attributes"].keys())
-            + list(hesabu_params["contracts_attributes"].keys())
-        ]
-        data.rename(
-            columns=hesabu_params["contracts_attributes"],
-            inplace=True,
-        )
-        data.rename(
-            columns=hesabu_params["quantite_attributes"],
-            inplace=True,
-        )
-        data["dec_fbp"] = data["dec"] - data["dec_cam"] - data["dec_mfp"]
-        data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
-        data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
-        data = data[data["dec"].notna() & (data["dec"] != 0)]
-        data.contract_end_date = data.contract_end_date.astype(int)
-        data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
+    data = pl.concat(dfs)
+    duplicated = data.select(["organisation_unit_id", "service", "quarter"]).is_duplicated()
+    if duplicated.any():
+        current_run.log_warning(f"Found duplicated rows in quantity data: {duplicated}")
 
-        data["gain_verif"] = (data["dec_fbp"] - data["val_fbp"]) * data["tarif"]
-        data["subside_sans_verification"] = data["dec_fbp"] * data["tarif"]
-        data["subside_avec_verification"] = data["val_fbp"] * data["tarif"]
-        data["quarter"] = data["month"].map(dates.month_to_quarter)
-        data = rbv.calcul_ecarts(data)
-        data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv",
-            index=False,
-        )
-    else:
-        data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
-        )
-    return data
+    data = data.join(contracts, left_on="organisation_unit_id", right_on="org_unit_id", how="left")
+
+    data = data.select(
+        list(setup["quantite_attributes"].keys()) + list(setup["contracts_attributes"].keys())
+    )
+    data = data.rename(
+        setup["contracts_attributes"],
+    ).rename(
+        setup["quantite_attributes"],
+    )
+
+    null_contracts = data["contract_start_date"].is_null()
+    if null_contracts.any():
+        data = deal_with_null_contracts(data, ous_ref)
+
+    data = data.with_columns(
+        pl.col("contract_end_date").cast(pl.Int64),
+        (pl.col("dec") - pl.col("val")) * pl.col("tarif").alias("gain_verif"),
+        (pl.col("dec") * pl.col("tarif")).alias("subside_sans_verification"),
+        (pl.col("val") * pl.col("tarif")).alias("subside_avec_verification"),
+        (pl.col("month").alias("quarter")),
+    )
+    data = calcul_ecarts(data)
+
+    output_path = (
+        f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/{model_name}.csv"
+    )
+    save_csv(data, Path(output_path))
+
+    return data.to_pandas()
 
 
-@buu_init_vbr.task
-def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name):
-    """Create a CSV file with the quality data.
-    (1) We combine all of the data from the packages cvs's that have quality data.
-    (2) We select the columns that we are interested in.
-    (3) We perform some calculations on the data, to have all of the information we will need.
-    (4) We save the data in a CSV file.
-
-    Parameters
-    ----------
-    done: bool
-        Indicates that the process get_package_values has finished.
-    periods: list
-        The periods to be considered.
-    packages: dict
-        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
-    hesabu_params: dict
-        Contains the information we want to extract from Hesabu.
-    extract: bool
-        If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
-        model_name: str
-        The name of the model. We will use it for the name of the csv file.
+def deal_with_null_contracts(data, ous_ref):
+    """
+    In this case, there are some organizational units that do not have a contract.
+    (I do not know why)
+    We will fill the location information with the information from ous_ref.
 
     Returns
     -------
-    data: pd.DataFrame
-        A DataFrame containing the quality data.
     """
-    if extract:
-        data = pd.DataFrame()
-        for id in packages:
-            if hesabu_params["packages"][str(id)] == "qualite" and os.path.exists(
-                f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}"
-            ):
-                for p, q in [(p, dates.month_to_quarter(str(p))) for p in periods]:
-                    if os.path.exists(
-                        f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{q}.csv"
-                    ):
-                        df = pd.read_csv(
-                            f"{workspace.files_path}/pipelines/initialize_vbr/packages/{id}/{q}.csv"
-                        )
-                        df["month"] = str(p)
-                        data = pd.concat([data, df], ignore_index=True)
-        data = data[list(hesabu_params["qualite_attributes"].keys()) + ["month"]]
-        data.rename(
-            columns=hesabu_params["qualite_attributes"],
-            inplace=True,
-        )
-        data["score"] = data["num"] / data["denom"]
-        data["month_final"] = data["quarter"].map(dates.quarter_to_months)
-        data.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv",
-            index=False,
-        )
-    else:
-        data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
-        )
+    null_mask = data["contract_start_date"].is_null()
+    null_count = null_mask.sum()
+    total_count = data.height
+    current_run.log_warning(
+        f"There are {100 * null_count / total_count:.2f}% rows with null contract_start_date. "
+        "I will fill the location information with the information from the pyramid."
+    )
+
+    pyramid = ous_ref.select(
+        pl.col("id").alias("ou"),
+        pl.col("level").alias("level_pyramid"),
+        pl.col("level_1_id").alias("level_1_uid_pyramid"),
+        pl.col("level_2_id").alias("level_2_uid_pyramid"),
+        pl.col("level_3_id").alias("level_3_uid_pyramid"),
+        pl.col("level_4_id").alias("level_4_uid_pyramid"),
+        pl.col("level_5_id").alias("level_5_uid_pyramid"),
+        pl.col("level_6_id").alias("level_6_uid_pyramid"),
+        pl.col("level_7_id").alias("level_7_uid_pyramid"),
+        pl.col("level_1_name").alias("level_1_name_pyramid"),
+        pl.col("level_2_name").alias("level_2_name_pyramid"),
+        pl.col("level_3_name").alias("level_3_name_pyramid"),
+        pl.col("level_4_name").alias("level_4_name_pyramid"),
+        pl.col("level_5_name").alias("level_5_name_pyramid"),
+        pl.col("level_6_name").alias("level_6_name_pyramid"),
+        pl.col("level_7_name").alias("level_7_name_pyramid"),
+    )
+
+    data = data.join(pyramid, on="ou", how="left")
+
+    data = data.with_columns(
+        pl.when(null_mask)
+        .then(pl.col("level_1_uid_pyramid"))
+        .otherwise(pl.col("level_1_uid"))
+        .alias("level_1_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_2_uid_pyramid"))
+        .otherwise(pl.col("level_2_uid"))
+        .alias("level_2_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_3_uid_pyramid"))
+        .otherwise(pl.col("level_3_uid"))
+        .alias("level_3_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_4_uid_pyramid"))
+        .otherwise(pl.col("level_4_uid"))
+        .alias("level_4_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_5_uid_pyramid"))
+        .otherwise(pl.col("level_5_uid"))
+        .alias("level_5_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_6_uid_pyramid"))
+        .otherwise(pl.col("level_6_uid"))
+        .alias("level_6_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_7_uid_pyramid"))
+        .otherwise(pl.col("level_7_uid"))
+        .alias("level_7_uid"),
+        pl.when(null_mask)
+        .then(pl.col("level_1_name_pyramid"))
+        .otherwise(pl.col("level_1_name"))
+        .alias("level_1_name"),
+        pl.when(null_mask)
+        .then(pl.col("level_2_name_pyramid"))
+        .otherwise(pl.col("level_2_name"))
+        .alias("level_2_name"),
+        pl.when(null_mask)
+        .then(pl.col("level_3_name_pyramid"))
+        .otherwise(pl.col("level_3_name"))
+        .alias("level_3_name"),
+        pl.when(null_mask)
+        .then(pl.col("level_4_name_pyramid"))
+        .otherwise(pl.col("level_4_name"))
+        .alias("level_4_name"),
+        pl.when(null_mask)
+        .then(pl.col("level_5_name_pyramid"))
+        .otherwise(pl.col("level_5_name"))
+        .alias("level_5_name"),
+        pl.when(null_mask)
+        .then(pl.col("level_6_name_pyramid"))
+        .otherwise(pl.col("level_6_name"))
+        .alias("level_6_name"),
+        pl.when(null_mask)
+        .then(pl.col("level_7_name_pyramid"))
+        .otherwise(pl.col("level_7_name"))
+        .alias("level_7_name"),
+        pl.when(null_mask).then(pl.col("level_pyramid")).otherwise(pl.col("level")).alias("level"),
+    ).drop(
+        [
+            "level_1_uid_pyramid",
+            "level_2_uid_pyramid",
+            "level_3_uid_pyramid",
+            "level_4_uid_pyramid",
+            "level_5_uid_pyramid",
+            "level_6_uid_pyramid",
+            "level_7_uid_pyramid",
+            "level_1_name_pyramid",
+            "level_2_name_pyramid",
+            "level_3_name_pyramid",
+            "level_4_name_pyramid",
+            "level_5_name_pyramid",
+            "level_6_name_pyramid",
+            "level_7_name_pyramid",
+            "level_pyramid",
+        ]
+    )
+
     return data
 
 
-@buu_init_vbr.task
-def save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces):
+def save_simulation_environment(quant, setup, model_name, selection_provinces):
     """We save the simulation in a pickle file. We will then access this pickle file in the second pipeline.
 
     Parameters
@@ -290,21 +1050,17 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
         The name of the model. We will use it for the name of the pickle file.
     selection_provinces: bool
         If True, we will select the provinces. This was inputed by the user.
-
-    Returns
-    -------
-    list:
-        A list of regions.
     """
     regions = []
     orgunits = quant["ou"].unique()
-    quality_indicators = sorted(qual["indicator"].unique())
+    quality_indicators = []
+    quality_df = pd.DataFrame(columns=["ou", "indicator", "quarter", "month"])
     if (
         selection_provinces
-        and "selection_provinces" in hesabu_params
-        and len(hesabu_params["selection_provinces"]) > 0
+        and "selection_provinces" in setup
+        and len(setup["selection_provinces"]) > 0
     ):
-        for province in hesabu_params["selection_provinces"]:
+        for province in setup["selection_provinces"]:
             group_of_ou = rbv.GroupOrgUnits(
                 province,
                 quality_indicators,
@@ -315,18 +1071,24 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
                 # temp has the quantitative information for the province and organizational unit we are interested in.
                 if len(temp) > 0:
                     group_of_ou.add_ou(
-                        rbv.Orgunit(
+                        orgunit.Orgunit(
                             ou,
                             temp,
-                            qual[(qual.ou == ou)],
+                            quality_df,
                             quality_indicators,
-                            temp.type_ou.values[0]
-                            in hesabu_params["type_ou_verification_systematique"],
+                            False,
                         )
                     )
                     nb_tot += 1
 
-            current_run.log_info(f"Province= {province}. Number of orgunits= {nb_tot}")
+                    if nb_tot % 1000 == 0:
+                        current_run.log_info(
+                            f"Saving data for province {province}... Current number of orgunits= {nb_tot}"
+                        )
+
+            current_run.log_info(
+                f"Saved data for province= {province}. Total number of orgunits= {nb_tot}"
+            )
             regions.append(group_of_ou)
 
     else:
@@ -340,182 +1102,36 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
             # temp has the quantitative information for the province and organizational unit we are interested in.
             if len(temp) > 0:
                 group_of_ou.add_ou(
-                    rbv.Orgunit(
+                    orgunit.Orgunit(
                         ou,
                         temp,
-                        qual[(qual.ou == ou)],
+                        quality_df,
                         quality_indicators,
-                        temp.type_ou.values[0]
-                        in hesabu_params["type_ou_verification_systematique"],
+                        False,
                     )
                 )
                 nb_tot += 1
-        current_run.log_info(f"number of orgunits= {nb_tot}")
+
+                if nb_tot % 1000 == 0:
+                    current_run.log_info(
+                        f"Saving data for the national level... Current number of orgunits= {nb_tot}"
+                    )
+
+        current_run.log_info(f"Saved data at national level. Total number of orgunits= {nb_tot}")
         regions.append(group_of_ou)
+    base_path = f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation"
+    os.makedirs(base_path, exist_ok=True)
+    name = f"{model_name}.pickle"
+    path = f"{base_path}/{name}"
 
-    if not os.path.exists(
-        f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation"
-    ):
-        os.makedirs(f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation")
-    with open(
-        f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle",
-        "wb",
-    ) as file:
-        # Serialize and save the object to the file
+    with open(path, "wb") as file:
         pickle.dump(regions, file)
+
     current_run.log_info(
-        f"Fichier d'initialisation sauvé: {workspace.files_path}/pipelines/initialize_vbr/initialization_simulation/{model_name}.pickle"
+        f"Saved the simulation environment in {path}. You can now run the second pipeline."
     )
-    return regions
 
 
-@buu_init_vbr.task
-def clean_quant_data(quant, clean_data, model_name):
-    """
-    Clean the quantity data. Only if the bool_clean_data is set to True.
-    We remove the rows where the validated value is a lot bigger than the declared value.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    clean_data: bool
-        If True, clean the data. If False, we don't do anything.
-    model_name: str
-        The name of the model. We will use it for the name of the csv file.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    """
-    if clean_data:
-        outliers = pd.DataFrame()
-        quant, outliers = remove_weirdly_high_validated_values(quant, outliers)
-        quant, outliers = remove_null_tarifs(quant, outliers)
-        quant, outliers = remove_fbp_not_predominant(quant, outliers)
-        quant, outliers = remove_negative_values(quant, outliers)
-        per_outliers = 100 * len(outliers) / len(quant)
-        current_run.log_info(
-            f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
-        )
-        outliers.to_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/outliers_quantity_data_{model_name}.csv",
-            index=False,
-        )
-
-    return quant
-
-
-def remove_weirdly_high_validated_values(quant, outliers):
-    """
-    Remove the rows where the validated value is a lot bigger than the declared value.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    """
-    max_difference = -1500
-    quant["ratio dec-val"] = 100 * (quant["dec"] - quant["val"]) / quant["ver"]
-    ser_less_than_1500 = quant["ratio dec-val"] < max_difference
-    new_outliers = quant[ser_less_than_1500].sort_values("ratio dec-val")
-    quant = quant[~ser_less_than_1500]
-    quant = quant.drop(columns=["ratio dec-val"])
-    new_outliers = new_outliers.drop(columns=["ratio dec-val"])
-    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
-    return quant, outliers
-
-
-def remove_null_tarifs(quant, outliers):
-    """
-    Remove the rows where the tarif is null.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    """
-    ser_null_tarif = quant["tarif"].isna()
-    new_outliers = quant[ser_null_tarif]
-    quant = quant[~ser_null_tarif]
-    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
-    return quant, outliers
-
-
-def remove_fbp_not_predominant(quant, outliers, min_percentage=0.95):
-    """
-    Remove the rows where the FBP-declared values is not a big percentage of the total declared values.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    min_percentage: float
-        The minimum percentage of the FBP-declared values compared to the total declared values.
-        Default is 0.95, meaning that the FBP-declared values should be at least 95% of the total declared values.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    """
-    ser_fbp_not_predominant = quant["dec_fbp"] / quant["dec"] < min_percentage
-    new_outliers = quant[ser_fbp_not_predominant]
-    quant = quant[~ser_fbp_not_predominant]
-    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
-    return quant, outliers
-
-
-def remove_negative_values(quant, outliers):
-    """
-    Remove the rows where the declared/verified/validated values are negative.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    """
-    list_cols_to_check = ["dec", "ver", "val", "dec_fbp", "val_fbp", "ver_fbp"]
-    ser_negative_values = quant[list_cols_to_check].lt(0).any(axis=1)
-    new_outliers = quant[ser_negative_values]
-    quant = quant[~ser_negative_values]
-    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
-    return quant, outliers
-
-
-@buu_init_vbr.task
 def get_dhis2(con_oh):
     """Start the connection to the DHIS2 instance.
 
@@ -532,55 +1148,17 @@ def get_dhis2(con_oh):
     return DHIS2(con_oh)
 
 
-@buu_init_vbr.task
-def get_hesabu_vbr_setup():
-    """Open the JSON file with the Hesabu setup.
+def get_setup():
+    """Open the JSON file with the setup.
 
     Returns
     -------
     Dict:
-        Contains the information we want to extract from Hesabu.
+        Contains the setup.
     """
-    return json.load(
-        open(f"{workspace.files_path}/pipelines/initialize_vbr/hesabu/hesabu_vbr_setup.json")
-    )
+    return load_json(Path(f"{workspace.files_path}/pipelines/initialize_vbr/config/setup.json"))
 
 
-@buu_init_vbr.task
-def get_hesabu_package_ids(hesabu_setup):
-    """Get the package IDs from the Hesabu setup.
-
-    Parameters
-    ----------
-    hesabu_setup: dict
-        The Hesabu setup.
-
-    Returns
-    -------
-    list:
-        The package IDs.
-    """
-    return [int(id) for id in hesabu_setup["packages"]]
-
-
-@buu_init_vbr.task
-def get_contract_group_unit_id(hesa_setup):
-    """Get the contract ID from the Hesabu setup.
-
-    Parameters
-    ----------
-    hesabu_setup: dict
-        The Hesabu setup.
-
-    Returns
-    -------
-    str:
-        The contract ID.
-    """
-    return hesa_setup["main_contract_id"]
-
-
-@buu_init_vbr.task
 def get_hesabu(con_hesabu):
     """Start the connection to the Hesabu instance.
 
@@ -597,135 +1175,7 @@ def get_hesabu(con_hesabu):
     return workspace.get_connection(con_hesabu)
 
 
-@buu_init_vbr.task
-def fetch_hesabu_package(con_hesabu, package_ids):
-    """Using the Hesabu connection, get the codes for the information that we need from each of the packages.
-    You have a list of package IDs. They correspond to the different informations that we are going to want to extract from DHIS2.
-    These packages contain different informations. We go into the Hesabu page to get the codes/names/etc of those informations.
-
-    Parameters
-    ----------
-    con_hesabu:
-        Connection to the Hesabu instance.
-    package_ids: list
-        The IDs of the informations that we want to extract from DHIS2.
-
-    Returns
-    -------
-    dict:
-        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
-
-    """
-    headers = {
-        "Accept": "application/vnd.api+json;version=2",
-        "Accept-Language": "en-US",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "X-Token": con_hesabu.token,
-        "X-Dhis2UserId": con_hesabu.dhis2_user_id,
-    }
-    hesabu_packages = {}
-    for package_id in package_ids:
-        url = f"{con_hesabu.url}/{package_id}"
-        response = requests.get(url, headers=headers)
-        hesabu_payload = response.json()
-        hesabu_package = data_extraction.deserialize(hesabu_payload)
-
-        activities = []
-        freq = hesabu_package["frequency"]
-        for activity in hesabu_package["projectActivities"]:
-            some_ext = [
-                mapping for mapping in activity["inputMappings"] if "externalReference" in mapping
-            ]
-            if len(activity["inputMappings"]) > 0 and len(some_ext) > 0:
-                new_activity = {
-                    "name": activity["name"],
-                    "id": activity["id"],
-                    "code": activity["code"],
-                    "inputMappings": {},
-                }
-
-                for mapping in activity["inputMappings"]:
-                    if "externalReference" in mapping:
-                        new_activity["inputMappings"][mapping["input"]["code"]] = {
-                            "externalReference": mapping["externalReference"],
-                            "name": mapping["name"],
-                        }
-
-                activities.append(new_activity)
-
-            activities = sorted(activities, key=lambda x: x["code"])
-
-        hesabu_package["activities"] = activities
-        hesabu_packages[package_id] = {"content": hesabu_package, "freq": freq}
-    return hesabu_packages
-
-
-@buu_init_vbr.task
-def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
-    """Create a CSV file for each of the packages and each of the periods.
-    Each of the packages contains a kind of information (for example, the xxxx).
-    In order to fill the CVSs files, we use the codes/names/etc that we extracted from Hesabu.
-    Then, we go to DHIS2 and get the data for each of those codes/names/etc.
-    We create a CSV file for each of the packages and each of the periods.
-
-    Parameters
-    ----------
-    dhis:
-        Connection to the DHIS2 instance.
-    periods: list
-        The periods to be considered.
-    hesabu_packages: dict
-        A dictionary containing the codes/names/etc that we are going to want to extract from DHIS2.
-    contract_group: str
-        The contract ID.
-    extract: bool
-        If True, extract the data. If False, we don't do anything. (We assume that the pertinent data was already extracted).
-
-    Returns
-    -------
-    bool:
-        We indicate that the process has finished.
-    """
-    if extract:
-        for package_id in hesabu_packages:
-            # We iterate over each of the packages we want to extract.
-            package = hesabu_packages[package_id]["content"]
-            freq = hesabu_packages[package_id]["freq"]
-            if freq != "monthly":
-                periods_adapted = list({dates.month_to_quarter(str(pe)) for pe in periods})
-                current_run.log_info(f"Adapted periods: {periods_adapted}")
-            else:
-                periods_adapted = periods
-            package_name = package["name"]
-            deg_external_reference = package["degExternalReference"]
-            org_unit_ids = data_extraction.get_org_unit_ids_from_hesabu(
-                contract_group, package, dhis
-            )
-            # Here, we input the contract ID, the package that we are interested in and the DHIS2 connection.
-            # We output a set of IDs of the organization units that we need to look at.
-            org_unit_ids = list(org_unit_ids)
-            current_run.log_info(
-                f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
-            )
-            if len(org_unit_ids) > 0:
-                data_extraction.fetch_data_values(
-                    dhis,
-                    deg_external_reference,
-                    org_unit_ids,
-                    periods_adapted,
-                    package["activities"],
-                    package_id,
-                    f"{workspace.files_path}/pipelines/initialize_vbr/packages",
-                )
-                # Here, we input the DHIS2 connection, the degree of external reference, the list of IDs of the organization units,
-                # the periods we are interested in, the activities we are interested in and the package ID.
-                # We output a CSV file for each of the packages and each of the periods.
-
-    return True
-
-
-@buu_init_vbr.task
-def fetch_contracts(dhis, contract_program_id, model_name):
+def fetch_contracts(dhis, contract_program_id, model_name, extract):
     """Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
 
     Parameters
@@ -736,14 +1186,18 @@ def fetch_contracts(dhis, contract_program_id, model_name):
         The ID of the program  in DHIS2 that we want to extract the data elements from.
         (The data in DHIS2 is organized by contracts.
         We specify the ID of the contract that relates to VBR in the pertinent country)
-    model_name: str
-        The name of the model. We will use it for the name of the csv file.
 
     Returns
     -------
     records_df: pd.DataFrame
         A DataFrame containing the information about the data elements we want to extract.
     """
+    output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/{model_name}.csv"
+
+    if os.path.exists(output_path) and not extract:
+        current_run.log_info(f"Reading contracts from {output_path}.")
+        return pl.read_csv(output_path)
+
     program = dhis.api.get(
         f"programs/{contract_program_id}.json?fields=id,name,programStages[:all,programStageDataElements[dataElement[id,code,name,optionSet[options[code,name]]]"
     )
@@ -780,15 +1234,74 @@ def fetch_contracts(dhis, contract_program_id, model_name):
 
         records.append(record)
 
-    records_df = pd.DataFrame(records)
-    records_df.to_csv(
-        f"{workspace.files_path}/pipelines/initialize_vbr/data/contracts/contracts_{model_name}.csv",
-        index=False,
+    records_df = pl.DataFrame(records, infer_schema_length=None)
+    save_csv(
+        records_df,
+        Path(output_path),
     )
     return records_df
 
 
-@buu_init_vbr.task
+def get_periods_dict(period, window):
+    """
+    Get a dictionary with the periods to extract data from. We will construct it both
+    for quarters and months.
+
+    Parameters
+    ----------
+    period: str
+        The end of the period to be considered. Is inputed by the user.
+    window: int
+        The number of months to be considered. Is inputed by the user.
+
+    Returns
+    -------
+    dict:
+        A dictionary with the periods to extract data from, both for quarters and months.
+    """
+    frequency = get_period_type(period)
+    start, end = get_start_end(period, window, frequency)
+
+    if frequency == "quarter":
+        quarters = get_date_series(start, end, type="quarter")
+    else:
+        start_q = dates.month_to_quarter(int(start))
+        end_q = dates.month_to_quarter(int(end))
+        quarters = get_date_series(start_q, end_q, type="quarter")
+
+    month_list = []
+    linking = {}
+    for q in quarters:
+        new_months = get_months_in_quarter(q)
+        month_list.extend(new_months)
+        linking[str(q)] = new_months
+
+    return {"Quarterly": quarters, "Monthly": month_list, "Linking": linking}
+
+
+def get_months_in_quarter(q):
+    """
+    Get the months in a quarter.
+
+    Parameters
+    ----------
+    q: Quarter
+        The quarter in the format yyyyQq (e.g., 2024Q2).
+
+    Returns
+    -------
+    list:
+        The months in the quarter.
+    """
+    year = int(q.year)
+    q = int(q.quarter)
+    first_month = (q - 1) * 3 + 1
+    months = []
+    for m in range(first_month, first_month + 3):
+        months.append(Month.from_string(f"{year}{m:02d}"))
+    return months
+
+
 def get_periods(period, window):
     """Get the periods.
 
@@ -851,14 +1364,14 @@ def get_start_end(period, window, frequency):
         year = int(period[:4])
         quarter = int(period[-1])
         end = year * 100 + quarter * 3
-        start = dates.months_before(end, window)
+        start = dates.months_before(end, window - 1)
         start = dates.month_to_quarter(start)
         end = dates.month_to_quarter(end)
     else:
         end = int(period)
-        start = dates.months_before(end, window)
+        start = dates.months_before(end, window - 1)
     return str(start), str(end)
 
 
 if __name__ == "__main__":
-    buu_init_vbr()
+    initialize_vbr()
