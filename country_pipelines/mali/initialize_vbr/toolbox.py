@@ -83,7 +83,6 @@ def load_json(file_path: Path) -> dict:
     try:
         with file_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        current_run.log_info(f"JSON successfully loaded from {file_path}.")
         return data
 
     except FileNotFoundError as e:

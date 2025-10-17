@@ -28,16 +28,16 @@ import orgunit
     type=str,
     help="Last period to extract data from (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202509",
+    default="202512",
 )
 @parameter(
     "window",
     name="Number of months to consider",
     type=int,
     required=True,
-    default=6,
+    default=36,
 )
-@parameter("model_name", name="Name of the model", type=str, default="model_full", required=True)
+@parameter("model_name", name="Name of the model", type=str, default="model_1710_2", required=True)
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
@@ -263,7 +263,7 @@ def format_quarterly_indicator(data, indicator, payment_mode):
     return mod_df
 
 
-def change_data_values(present_indicators, ous_ref, quarter, payment_mode, data_elements_codes):
+def change_data_values(present_indicators, quarter, payment_mode, data_elements_codes):
     """
     Adapt the declared, validated and tarif_def data values.
 
@@ -288,20 +288,34 @@ def change_data_values(present_indicators, ous_ref, quarter, payment_mode, data_
         data = add_services(data, data_elements_codes, payment_mode, indicator)
 
         if frequency == "Monthly":
-            monthly_df = aggregate_monthly_indicator(data, quarter, indicator, payment_mode)
-            data_to_concat[indicator] = monthly_df
+            data = aggregate_monthly_indicator(data, quarter, indicator, payment_mode)
 
         elif frequency == "Quarterly":
-            quarterly_df = format_quarterly_indicator(data, indicator, payment_mode)
-            data_to_concat[indicator] = quarterly_df
+            data = format_quarterly_indicator(data, indicator, payment_mode)
 
         else:
             raise ValueError(f"Frequency {frequency} not recognized for indicator {indicator}.")
+
+        data = data.with_columns(pl.col(indicator).cast(pl.Float64).alias(indicator))
+        data_to_concat[indicator] = data
 
     return data_to_concat
 
 
 def join_data_values(data_to_concat):
+    """
+    Put the declared, validated and tarif_def data values together.
+
+    Parameters
+    ----------
+    data_to_concat: dict
+        A dictionary containing the DataFrames to concatenate.
+
+    Returns
+    -------
+    pl.DataFrame
+        A DataFrame containing the joined data values.
+    """
     declare = data_to_concat["declare"]
     valide = data_to_concat["valide"]
     tarif_def = data_to_concat["tarif_def"]
@@ -319,13 +333,9 @@ def join_data_values(data_to_concat):
         current_run.log_warning(
             f"There are {100 * nulls_count / total_count:.2f}% rows that had filled "
             "validated values but not declared values. This is not necessarily very bad,"
-            ", I will fill them with zeros"
+            ", I will fill not them with zeros, so you can see"
         )
         merged = merged.with_columns(
-            pl.when(pl.col("declare").is_null())
-            .then(0)
-            .otherwise(pl.col("declare"))
-            .alias("declare"),
             pl.when(pl.col("declare").is_null())
             .then(pl.col("organisation_unit_id_right"))
             .otherwise(pl.col("organisation_unit_id"))
@@ -357,10 +367,7 @@ def join_data_values(data_to_concat):
         current_run.log_warning(
             f"There are {100 * nulls_count / total_count:.2f}% rows that had declared values"
             " but not validated values. This is not necessarily very bad,"
-            ", I will fill them with zeros"
-        )
-        merged = merged.with_columns(
-            pl.when(pl.col("valide").is_null()).then(0).otherwise(pl.col("valide")).alias("valide"),
+            ", I will fill not them with zeros, so you can see"
         )
 
     full_merged = merged.join(
@@ -379,6 +386,18 @@ def join_data_values(data_to_concat):
             " I will drop them."
         )
         full_merged = full_merged.filter(~nulls_tarif)
+
+    full_merged = full_merged.select(
+        [
+            "organisation_unit_id",
+            "service",
+            "payment_mode",
+            "declare",
+            "quarter",
+            "valide",
+            "tarif_def",
+        ]
+    )
 
     return full_merged
 
@@ -497,7 +516,7 @@ def extract_data_values(dhis, config, dict_periods, data_elements_codes, extract
                 )
                 if {"declare", "valide", "tarif_def"}.issubset(set(present_indicators.keys())):
                     data_to_concat = change_data_values(
-                        present_indicators, ous_ref, quarter, payment_mode, data_elements_codes
+                        present_indicators, quarter, payment_mode, data_elements_codes
                     )
                     merged = join_data_values(data_to_concat)
                     save_csv(merged, Path(output_file))
@@ -505,9 +524,14 @@ def extract_data_values(dhis, config, dict_periods, data_elements_codes, extract
                         relevant_payment_quarters[payment_mode] = []
                     relevant_payment_quarters[payment_mode].append(quarter)
                 else:
-                    current_run.log_warning(
-                        f"Only {', '.join(present_indicators.keys())} were present. I will not work with this."
-                    )
+                    if len(present_indicators) == 0:
+                        current_run.log_warning(
+                            f"No indicators were present for {payment_mode} in {quarter}."
+                        )
+                    else:
+                        current_run.log_warning(
+                            f"Only {', '.join(present_indicators.keys())} were present. I will not work with this."
+                        )
 
     return relevant_payment_quarters
 
@@ -515,6 +539,27 @@ def extract_data_values(dhis, config, dict_periods, data_elements_codes, extract
 def extract_data_value_for_indicator_quarter_and_payment(
     dhis, list_months, quarter, indicator, indicator_dict
 ):
+    """
+    Extract the values for a particular indicator, quarter and payment mode.
+
+    Parameters
+    ----------
+    dhis: DHIS2
+        Connection to the DHIS2 instance.
+    list_months: list
+        The list of months we need to extract data for
+    quarter: str
+        The quarter we need to extract data for
+    indicator: str
+        The indicator we need to extract data for (declare, valide, tarif_def)
+    indicator_dict: dict
+        The dictionary containing the information about the indicator (data set id, org units, frequency)
+
+    Returns
+    -------
+    pl.DataFrame:
+        A DataFrame containing the data for the specified indicator, quarter and payment mode.
+    """
     dataset_id = indicator_dict["data_set_id"]
     ou_id_request = indicator_dict["ou_list"]
     frequency = indicator_dict["freq"]
@@ -534,6 +579,29 @@ def extract_data_value_for_indicator_quarter_and_payment(
 def extract_data_values_for_quarter_and_payment(
     list_months, quarter, payment_mode, payment_dict, dhis, extract
 ):
+    """
+    Extract the data for a particular quarter and payment mode.
+
+    Parameters
+    ----------
+    list_months: list
+        The list of months we need to extract data for
+    quarter: str
+        The quarter we need to extract data for
+    payment_mode: str
+        The payment mode we need to extract data for (e.g. pma, etc)
+    payment_dict: dict
+        The dictionary containing the information about the payment mode (indicators, data set ids, org units, frequency)
+    dhis: DHIS2
+        Connection to the DHIS2 instance.
+    extract: bool
+        If True, extract all the data from DHIS2. If False, try using the existing CSV files.
+
+    Returns
+    -------
+    dict:
+        A dictionary mapping with the prensent indicators for the specified quarter and payment mode.
+    """
     present_indicators = {}
     for indicator, indicator_dict in payment_dict.items():
         folder_path = f"{workspace.files_path}/pipelines/initialize_vbr/packages/{payment_mode}"
@@ -541,12 +609,15 @@ def extract_data_values_for_quarter_and_payment(
         output_file = f"{folder_path}/{name}"
         os.makedirs(folder_path, exist_ok=True)
 
+        # if os.path.exists(output_file):
         if os.path.exists(output_file) and not extract:
             data_values = pl.read_csv(output_file)
         else:
             data_values = extract_data_value_for_indicator_quarter_and_payment(
                 dhis, list_months, quarter, indicator, indicator_dict
             )
+            # data_values = pl.DataFrame()
+            # CHANGE THIS
             if len(data_values) > 0:
                 data_values.write_csv(output_file)
 
@@ -777,6 +848,7 @@ def construct_de_df(descriptor, bool_hesabu_construct):
     """
     path_output = f"{workspace.files_path}/pipelines/initialize_vbr/config/data_elements_codes.csv"
     if os.path.exists(path_output) and not bool_hesabu_construct:
+        current_run.log_info(f"Reading data_elements_codes from {path_output}.")
         return pl.read_csv(path_output)
 
     list_rows = []
@@ -867,6 +939,10 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name):
     data: pd.DataFrame
         A DataFrame containing the quantity data.
     """
+    current_run.log_info(
+        "You will be using the data for: "
+        + ", ".join(f"{k}: {', '.join(map(str, v))}" for k, v in values_to_use.items())
+    )
     dfs = []
     for payment, list_periods in values_to_use.items():
         for period in list_periods:
@@ -875,6 +951,8 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name):
             )
             if os.path.exists(file_path):
                 df = pl.read_csv(file_path)
+                for col in ["declare", "valide", "tarif_def"]:
+                    df = df.with_columns(pl.col(col).cast(pl.Float64))
                 dfs.append(df)
             else:
                 raise FileNotFoundError(f"File {file_path} not found.")
@@ -1156,6 +1234,7 @@ def get_setup():
     Dict:
         Contains the setup.
     """
+    current_run.log_info(f"Reading setup.json from {workspace.files_path}.")
     return load_json(Path(f"{workspace.files_path}/pipelines/initialize_vbr/config/setup.json"))
 
 
@@ -1276,6 +1355,7 @@ def get_periods_dict(period, window):
         month_list.extend(new_months)
         linking[str(q)] = new_months
 
+    current_run.log_info(f"Quarters considered: {[str(q) for q in quarters]}")
     return {"Quarterly": quarters, "Monthly": month_list, "Linking": linking}
 
 
