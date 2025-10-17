@@ -102,35 +102,6 @@ def initialize_vbr(
     save_simulation_environment(quant, setup, model_name, selection_provinces)
 
 
-def divide_indicators_by_frequency(payment_dict):
-    """
-    Divide the indicators in the config dictionary by frequency.
-
-    Parameters
-    ----------
-    config: dict
-        The configuration dictionary.
-
-    Returns
-    -------
-    dict:
-        A dictionary mapping frequencies to lists of indicators.
-    """
-    dict_frequency = {}
-    for indicator, indicator_dict in payment_dict.items():
-        frequency = indicator_dict["freq"]
-        if frequency not in dict_frequency:
-            dict_frequency[frequency] = []
-        dict_frequency[frequency].append(indicator)
-
-    if "Quarterly" not in dict_frequency.keys():
-        raise ValueError(
-            "There are no indicators with quarterly frequency. This code is not prepared to handle this"
-        )
-
-    return dict_frequency
-
-
 def aggregate_monthly_indicator(data, quarter, indicator, payment_mode):
     """
     Concatenate monthly indicator files into a single DataFrame for a specific quarter.
@@ -168,68 +139,6 @@ def aggregate_monthly_indicator(data, quarter, indicator, payment_mode):
     )
 
     return monthly_df
-
-
-def add_extra_levels(df, ous):
-    """
-    The tarif is in the country level, but we have
-
-    Parameters
-    ----------
-    df: pl.DataFrame
-        A DataFrame containing the data for the specified indicator and quarter.
-    ous: pl.DataFrame
-        A DataFrame containing the organisational unit pyramid.
-
-    Returns
-    -------
-    pl.DataFrame:
-        A DataFrame containing the data for the specified indicator and quarter at level_5.
-    """
-    all_ous = df.select("organisation_unit_id").unique()
-    all_ous = all_ous.join(ous, how="left", left_on="organisation_unit_id", right_on="id")
-    ous_to_change = all_ous.filter(~pl.col("level").is_in([3, 4, 5, 6]))
-
-    if ous_to_change.height > 0:
-        current_run.log_info(
-            f"There are {ous_to_change.height} organisation units that are not at level 3, 4, 5 or 6."
-            "(for tarifs). I will merge the lower levels to them."
-        )
-        list_bad_ous = ous_to_change.select("organisation_unit_id").to_series().to_list()
-        for ou in list_bad_ous:
-            current_level = (
-                ous_to_change.filter(pl.col("organisation_unit_id") == ou)
-                .select("level")
-                .to_series()[0]
-            )
-            current_level_col = f"level_{current_level}_id"
-            for level_to_append in [3, 4, 5, 6]:
-                level_to_append_col = f"level_{level_to_append}_id"
-                relevant = (
-                    ous.filter(
-                        (pl.col(current_level_col) == ou)
-                        & (pl.col(level_to_append_col).is_not_null())
-                    )
-                    .select([current_level_col, level_to_append_col])
-                    .unique()
-                )
-                if relevant.height == 0:
-                    continue
-
-                df = df.join(
-                    relevant,
-                    how="left",
-                    left_on="organisation_unit_id",
-                    right_on=current_level_col,
-                )
-                df = df.with_columns(
-                    pl.when(pl.col("organisation_unit_id") == ou)
-                    .then(pl.col(level_to_append_col))
-                    .otherwise(pl.col("organisation_unit_id"))
-                    .alias("organisation_unit_id")
-                ).drop([level_to_append_col])
-
-    return df
 
 
 def format_quarterly_indicator(data, indicator, payment_mode):
@@ -442,6 +351,26 @@ def construct_config_extraction(dhis, bool_hesabu_construct, hesabu_descriptor, 
 
 
 def add_services(data_values, data_elements_codes, payment_mode, indicator):
+    """
+    Add the service names to the data values DataFrame.
+
+    Parameters
+    ----------
+    data_values: pl.DataFrame
+        A DataFrame containing the data values.
+    data_elements_codes: pl.DataFrame
+        A DataFrame containing the data elements codes, per service, indicator and payment type.
+    payment_mode: str
+        The payment mode we are working on (e.g. pma, etc)
+    indicator: str
+        The indicator we are working on (declare, valide, tarif_def)
+
+    Returns
+    -------
+    pl.DataFrame:
+        A DataFrame containing the data values with the service names added.
+
+    """
     relevant_data_element_codes = data_elements_codes.filter(pl.col("payment_type") == payment_mode)
     data_values = data_values.join(
         relevant_data_element_codes,
