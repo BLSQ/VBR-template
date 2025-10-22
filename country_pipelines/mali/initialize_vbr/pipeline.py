@@ -1117,7 +1117,7 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) 
 
     data = data.with_columns(
         pl.col("contract_end_date").cast(pl.Int64),
-        (pl.col("dec") - pl.col("val")) * pl.col("tarif").alias("gain_verif"),
+        ((pl.col("dec") - pl.col("val")) * pl.col("tarif")).alias("gain_verif"),
         (pl.col("dec") * pl.col("tarif")).alias("subside_sans_verification"),
         (pl.col("val") * pl.col("tarif")).alias("subside_avec_verification"),
         (pl.col("month").alias("quarter")),
