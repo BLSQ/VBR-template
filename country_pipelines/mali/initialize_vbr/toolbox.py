@@ -7,9 +7,6 @@ from openhexa.toolbox.dhis2.periods import Month, Quarter
 
 import logging
 from datetime import datetime
-from typing import Literal
-
-import polars as pl
 
 from openhexa.toolbox.dhis2 import DHIS2
 
@@ -39,6 +36,31 @@ def save_csv(df: pl.DataFrame, file_path: Path):
         raise OSError(f"OS error occurred while saving CSV to '{file_path}': {e}") from e
     except Exception as e:
         raise RuntimeError(f"An unexpected error occurred while saving CSV: {e}") from e
+
+
+def save_parquet(df: pl.DataFrame, file_path: Path):
+    """Saves a Polars DataFrame to a Parquet file, creating parent directories if needed.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        The DataFrame to save.
+    file_path : Path
+        The path where the parquet file will be saved.
+    """
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        df.write_parquet(file_path)
+        current_run.log_info(f"DataFrame successfully saved to Parquet at {file_path}.")
+
+    except PermissionError as e:
+        raise PermissionError(
+            f"Permission denied when trying to save Parquet to '{file_path}': {e}"
+        ) from e
+    except OSError as e:
+        raise OSError(f"OS error occurred while saving Parquet to '{file_path}': {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"An unexpected error occurred while saving Parquet: {e}") from e
 
 
 def save_json(data: dict, file_path: Path):
@@ -97,7 +119,7 @@ def load_json(file_path: Path) -> dict:
         raise RuntimeError(f"An unexpected error occurred while loading JSON: {e}") from e
 
 
-def get_date_series(start, end, type):
+def get_date_series(start, end, type) -> list:
     """
     Get a list of consecutive months or quarters between two dates.
 
@@ -126,7 +148,7 @@ def get_date_series(start, end, type):
     return range
 
 
-def month_to_quarter(num):
+def month_to_quarter(num) -> str:
     """
     Given a month, return the quarter corresponding to the given month.
 
@@ -301,18 +323,18 @@ def _data_values_to_dataframe(values: list[dict]) -> pl.DataFrame:
     return df
 
 
-def calcul_ecarts(q):
+def calcul_ecarts(q) -> pl.DataFrame:
     """
     Calculate the relations between the declared, verified and validated values.
 
     Parameters
     ----------
-    q : pd.DataFrame
+    q : pl.DataFrame
         DataFrame containing the quantitative information for the particular Organizational Unit
 
     Returns
     -------
-    q: pd.DataFrame
+    q: pl.DataFrame
         The same DataFrame with the new columns added.
     """
     q = q.with_columns(

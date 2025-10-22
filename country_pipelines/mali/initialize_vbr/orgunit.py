@@ -13,29 +13,69 @@ class Orgunit:
     ----------
     benefice_vbr: np.float64
         Amount of money won per center with VBR. It is calculated as:
-        (amount of money the center gets with VBR_taux - amount of money the center gets with systematic verification)
-        minus (how much it costs to verify the center)
+            subsidies based on declared values (possibly adjusted by taux)
+            minus subsidies based on validated values
+            minus cost of verification.
         If it is bigger than zero, then we should not do VBR.
-    category_centre: str
-        The category of the center.
+    diff_subsidies_decval_median_period: np.float64
+        The median of:
+            the difference in subsidies that the center would recieve based on the declared and  validated values.
+        The bigger, the more extra subsidies the center would get if it wasn't verified.
+        Its calculated for the period of the simulation.
+    diff_subsidies_tauxval_median_period: np.float64
+        The median of:
+            the difference in subsidies that the center would recieve based on the declared*taux and validated values.
+        The bigger, the more extra subsidies the center would get if it wasn't verified.
+        Its calculated for the period of the simulation.
+    id: str
+        The id of the organizational unit.
+    month: str
+        The month we are running the simulation for.
+        (if period_type == "month", it is the same as self.period)
+    nb_periods: int
+        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
+        It is inputed by the user.
+    nb_periods_verified: array
+        Number of periods in which the Organizational Unit has been verified.
+    nb_services: int
+        Number of services in the Organizational Unit.
+    period: str
+        The period (month or quarter) we are running the simulation for.
+    period_type: str
+        Frequency of the verification, either "month" or "quarter". It is inputed by the user.
+    quantite: pd.DataFrame
+        The quantitative data for the center.
+    quantite_window: pd.DataFrame
+        Quantitative data for the observation window.
+    quarter: str
+        The quarter we are running the simulation for.
+        (if period_type == "quarter", it is the same as self.period)
+    risk: str
+        The overall risk of the center.
+    risk_quantite: str
+        The quantity risk of the center.
+    subside_dec_period: np.float64
+        The total subside the center would get based only on the declared values.
+        It only takes into account the period we are running the simulation for.
+    subside_taux_period: np.float64
+        The total subside the center would get based on the declared values,
+        but taking into account the taux of the center.
+        It only takes into account the period we are running the simulation for.
+    subside_val_period: np.float64
+        The total subside the center would get based on the validated values.
+        It only takes into account the period we are running the simulation for.
+
+
+    Attributes - old (unrevised)
+    ----------
+
     diff_subsidies_decval_median: np.float64
         The median of:
             the difference in subsidies that the center would recieve based on the declared or validated values.
         It is calculated as: median((declared - validated) * tarif)
         The bigger, the more extra subsidies the center would get if it wasn't verified.
         Its calculated for all of the observation window.
-    diff_subsidies_decval_median_period: np.float64
-        The median of:
-            the difference in subsidies that the center would recieve based on the declared or validated values.
-        It is calculated as: median((declared - validated) * tarif)
-        The bigger, the more extra subsidies the center would get if it wasn't verified.
-        Its calculated for the period of the simulation.
-    diff_subsidies_tauxval_median_period: np.float64
-        The median of:
-            the difference in subsidies that the center would recieve without verification (calculated with taux)
-            and with verification.
-        The bigger, the more extra subsidies the center would get if it wasn't verified.
-        Its calculated for the period of the simulation.
+
     ecart_median: np.float64
         The median of the ecart for the center.
         The ecart measures the difference between the declared, verified and validated values.
@@ -48,29 +88,15 @@ class Orgunit:
         0.4*(ecart_dec_ver) + 0.6*(ecart_ver_val) with
         ecart_dec_ver = (dec - ver) / ver & ecart_ver_val = (ver - val) / ver
         The closer to 1, the more the center is lying.
-    id: str
-        The id of the organizational unit.
+
     identifier_verification: list
         List with the ID/names of the level 2, 3, 4, 5 and 6 of the center.
     is_verified: bool
         True if the center will be verified, False otherwise.
-    month: str
-        The month we are running the simulation for.
-        (if period_type == "month", it is the same as self.period)
-    nb_periods :int
-        Minimum number of months with dec-val data (during the observation window) to be eligible for VBR.
-        It is inputed by the user.
-    nb_periods_verified: array
-        Periods in which the Organizational Unit has been verified.
     nb_services_risky: int
         Number of services that are not at low risk.
     nb_services_moyen_risk: int
         Number of services whose seuil is under the medium risk threshold.
-    period: str
-        The date we are running the simulation for.
-    period_type: str
-        Frequency of the simulation, either "month" or "quarter".
-        It is inputed by the user.
     qualite: pd.DataFrame
         The qualitative data for the center.
         Right now we don't do anything with it.
@@ -80,30 +106,8 @@ class Orgunit:
     qualite_window: pd.DataFrame
         Qualitative data for the observation window.
         Right now we don't do anything with it.
-    quantite: pd.DataFrame
-        The quantitative data for the center.
-    quantite_window: pd.DataFrame
-        Quantitative data for the observation window.
-    quarter: str
-        The quarter we are running the simulation for.
-        (if period_type == "quarter", it is the same as self.period)
-    risk: str
-        The overall risk of the center.
     risk_gain_median: str
         The risk of the center based on how much we win by verifying it.
-    risk_quantite: str
-        The quantity risk of the center.
-    subside_dec_period: np.float64
-        The total subside the center would get based only on the declared values.
-        It is calcualted for the period of the simulation.
-    subside_taux_period: np.float64
-        The total subside the center would get based on the declared values, but taking into account the taux of the center.
-        (The subside the center would get without verification)
-        It only takes into account the period we are running the simulation for.
-    subside_val_period: np.float64
-        The total subside the center would get based on the validated values.
-        (The subside the center would get with verification)
-        It only takes into account the period we are running the simulation for.
     taux_validation: np.float64
         The median of the taux_validation for the center.
         (The taux validation is 1 - (dec - val)/dec. The closer to one, the more the center tells the truth)
@@ -112,64 +116,82 @@ class Orgunit:
         (The taux validation is 1 - (dec - val)/dec. The closer to one, the more the center tells the truth)
     """
 
-    def __init__(self, ou_id, quantite, qualite, qualite_indicators, uneligible_vbr):
+    def __init__(self, ou_id, uneligible_vbr, quantite, qualite=None, qualite_indicators=None):
         self.id = ou_id
 
         if uneligible_vbr:
-            self.category_centre = "pca"
+            self.risk = "uneligible"
         else:
-            self.category_centre = "pma"
+            self.risk = "unknown"
 
-        self.risk = "unknown"
-
-        self.quantite = quantite
-        self.qualite = qualite
-
-        self.initialize_quantite()
-        self.initialize_qualite()
-
-        self.qualite_indicators = qualite_indicators
-
-        self.identifier_verification = list(
-            self.quantite[
-                [
-                    "level_2_uid",
-                    "level_2_name",
-                    "level_3_uid",
-                    "level_3_name",
-                    "level_4_uid",
-                    "level_4_name",
-                    "level_5_uid",
-                    "level_5_name",
-                    "level_6_uid",
-                    "level_6_name",
-                ]
-            ].values[0]
-        )
+        self.initialize_quantite(quantite)
+        self.initialize_qualite(qualite, qualite_indicators)
 
         self.period_type = ""
         self.period = ""
         self.month = ""
         self.quarter = ""
+
         self.nb_periods = None
-
-        self.quantite_window = pd.DataFrame()
-        self.qualite_window = pd.DataFrame()
-
         self.nb_periods_verified = None
-        self.nb_services_risky = None
-        self.nb_services_moyen_risk = None
-        self.nb_services = None
 
+        self.nb_services = None
         self.subside_dec_period = None
         self.subside_val_period = None
         self.subside_taux_period = None
         self.diff_subsidies_tauxval_median_period = None
-        self.benefice_vbr = None
-        self.diff_subsidies_decval_median = None
         self.diff_subsidies_decval_median_period = None
+        self.benefice_vbr = None
 
-        # Quality indicators
+    def initialize_quantite(self, quantite):
+        """
+        Initialize the quantity data.
+        """
+        self.quantite = quantite.sort_values(by=["ou", "service", "quarter", "month"])
+        if "level_6_uid" not in self.quantite.columns:
+            self.quantite.loc[:, "level_6_uid"] = pd.NA
+            self.quantite.loc[:, "level_6_name"] = pd.NA
+        try:
+            self.quantite.loc["month"] = self.quantite["month"].astype("Int64").astype(str)
+        except ValueError:
+            self.quantite["month"] = self.quantite["month"].astype(str)
+
+        self.quantite_window = pd.DataFrame()
+        self.risk_quantite = "unknown"
+
+    def initialize_qualite(self, qualite, qualite_indicators):
+        """
+        Initialize the quality data.
+
+        NOTE: THIS IS NOT REVISED.
+        """
+        if qualite.empty:
+            if qualite_indicators is not None:
+                raise ValueError(
+                    "If qualite_indicators is provided, qualite dataframe must also be provided."
+                )
+            return
+
+        if qualite_indicators is None:
+            if not qualite.empty:
+                raise ValueError(
+                    "If qualite dataframe is provided, qualite_indicators must also be provided."
+                )
+            return
+
+        self.qualite_indicators = qualite_indicators
+        self.qualite = qualite.sort_values(by=["ou", "indicator", "quarter"])
+        self.qualite = self.qualite.drop_duplicates(["ou", "indicator", "quarter"])
+
+        if "level_6_uid" not in self.qualite.columns:
+            self.qualite.loc[:, "level_6_uid"] = pd.NA
+            self.qualite.loc[:, "level_6_name"] = pd.NA
+
+        try:
+            self.qualite.loc["month"] = self.qualite["month"].astype("Int64").astype(str)
+        except ValueError:
+            self.qualite["month"] = self.qualite["month"].astype(str)
+
         self.indicator_scores = {}
         self.general_quality = 0
         self.hygiene = 0
@@ -178,31 +200,7 @@ class Orgunit:
         self.quality_mod_risk = ""
         self.quality_low_risk = ""
         self.risk_quality = ""
-        self.risk_gain_median = ""
-        self.risk_quantite = ""
-
-    def initialize_quantite(self):
-        """
-        Initialize the quantity data.
-        """
-        self.quantite = self.quantite.sort_values(by=["ou", "service", "quarter", "month"])
-        if "level_6_uid" not in self.quantite.columns:
-            self.quantite.loc[:, "level_6_uid"] = pd.NA
-            self.quantite.loc[:, "level_6_name"] = pd.NA
-            self.qualite.loc[:, "level_6_uid"] = pd.NA
-            self.qualite.loc[:, "level_6_name"] = pd.NA
-        try:
-            self.quantite.loc["month"] = self.quantite["month"].astype("Int64").astype(str)
-        except ValueError:
-            self.quantite["month"] = self.quantite["month"].astype(str)
-
-    def initialize_qualite(self):
-        """
-        Initialize the quality data.
-        """
-        self.qualite = self.qualite.sort_values(by=["ou", "indicator", "quarter"])
-        self.qualite = self.qualite.drop_duplicates(["ou", "indicator", "quarter"])
-        self.qualite["month"] = self.qualite["month"].astype("Int64").astype(str)
+        self.qualite_window = pd.DataFrame()
 
     def set_verification(self, is_verified):
         """
