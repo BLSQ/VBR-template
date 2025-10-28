@@ -13,10 +13,10 @@ from openhexa.toolbox.dhis2 import DHIS2
 from pathlib import Path
 from openhexa.toolbox.dhis2.dataframe import get_organisation_units
 from openhexa.toolbox.dhis2.periods import Month
+from collections.abc import Generator
 
 
 from RBV_package import dates
-from RBV_package import rbv_environment as rbv
 
 from toolbox import (
     save_csv,
@@ -44,11 +44,9 @@ import orgunit
     name="Number of months to consider",
     type=int,
     required=True,
-    default=6,
+    default=12,
 )
-@parameter(
-    "model_name", name="Name of the model", type=str, default="use_for_simulation", required=True
-)
+@parameter("model_name", name="Name of the model", type=str, default="model_2810", required=True)
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
@@ -112,7 +110,55 @@ def initialize_vbr(
         dhis, config_extraction, periods, data_elements_ids, extract, model_name
     )
     quant = prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name)
-    save_simulation_environment(quant, setup, model_name, selection_provinces)
+    quant_clean = clean_quantity_data(quant)
+    save_simulation_environment(quant_clean, setup, model_name, selection_provinces)
+
+
+def clean_quantity_data(quant: pl.DataFrame) -> pd.DataFrame:
+    """
+    Clean the quantity data before saving it in a pickle file.
+    (1) We remove the rows where the declared is 0
+    (2) We remove the rows where the declared is NaN
+    (3) We remove the rows where the validated is NaN
+
+    Parameters
+    ----------
+    quant: pl.DataFrame
+        A DataFrame containing the quantity data.
+
+    Returns
+    -------
+    pd.DataFrame:
+        A DataFrame (pandas) containing the cleaned quantity data.
+    """
+    total_rows = quant.height
+
+    ser_dec_val_0 = (quant["dec"] == 0) & (quant["val"] == 0)
+    if ser_dec_val_0.any():
+        count_dec_0 = quant.filter(ser_dec_val_0).height
+        current_run.log_info(
+            f"Removing {count_dec_0} rows where declared and validated are 0"
+            f" ({100 * count_dec_0 / total_rows:.2f}%)"
+        )
+        quant = quant.filter(~ser_dec_val_0)
+
+    ser_dec_nan = quant["dec"].is_null()
+    if ser_dec_nan.any():
+        count_dec_nan = quant.filter(ser_dec_nan).height
+        current_run.log_info(
+            f"Removing {count_dec_nan} rows where declared is NaN ({100 * count_dec_nan / total_rows:.2f}%)"
+        )
+        quant = quant.filter(~ser_dec_nan)
+
+    ser_val_nan = quant["val"].is_null()
+    if ser_val_nan.any():
+        count_val_nan = quant.filter(ser_val_nan).height
+        current_run.log_info(
+            f"Removing {count_val_nan} rows where validated is NaN ({100 * count_val_nan / total_rows:.2f}%)"
+        )
+        quant = quant.filter(~ser_val_nan)
+
+    return quant.to_pandas()
 
 
 def aggregate_monthly_indicator(data, quarter, indicator, payment_mode) -> pl.DataFrame:
@@ -536,7 +582,7 @@ def add_services(
         str_null = f"{null_services_count} / {total_services}"
         data_values = data_values.filter(~null_services)
     else:
-        null_services_list = None
+        null_services_list = []
         str_null = ""
 
     return data_values, null_services_list, str_null
@@ -744,9 +790,11 @@ def extract_data_values_for_quarter_and_payment(
         if os.path.exists(output_file) and not extract:
             data_values = pl.read_csv(output_file)
         else:
-            data_values = extract_data_value_for_indicator_quarter_and_payment(
-                dhis, list_months, quarter, indicator, indicator_dict
-            )
+            # data_values = extract_data_value_for_indicator_quarter_and_payment(
+            #    dhis, list_months, quarter, indicator, indicator_dict
+            # )
+            # CHANGE THIS
+            data_values = pl.DataFrame()
             if len(data_values) > 0:
                 data_values.write_csv(output_file)
 
@@ -1051,7 +1099,7 @@ def fetch_hesabu_descriptor(hesabu, project_id, bool_hesabu_construct) -> dict:
     return hesabu_payload
 
 
-def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) -> pd.DataFrame:
+def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) -> pl.DataFrame:
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -1115,6 +1163,8 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) 
     if null_contracts.any():
         data = deal_with_null_contracts(data, ous_ref)
 
+    data = calcul_ecarts(data)
+
     data = data.with_columns(
         pl.col("contract_end_date").cast(pl.Int64),
         ((pl.col("dec") - pl.col("val")) * pl.col("tarif")).alias("gain_verif"),
@@ -1122,14 +1172,13 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) 
         (pl.col("val") * pl.col("tarif")).alias("subside_avec_verification"),
         (pl.col("month").alias("quarter")),
     )
-    data = calcul_ecarts(data)
 
     output_path = (
         f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/{model_name}.csv"
     )
     save_csv(data, Path(output_path))
 
-    return data.to_pandas()
+    return data
 
 
 def deal_with_null_contracts(data, ous_ref) -> pl.DataFrame:
@@ -1274,19 +1323,18 @@ def save_simulation_environment(quant, setup, model_name, selection_provinces):
     selection_provinces: bool
         If True, we will select the provinces. This was inputed by the user.
     """
-    regions = []
     orgunits = quant["ou"].unique()
-    quality_indicators = None
-    quality_df = pd.DataFrame(columns=["ou", "indicator", "quarter", "month"])
+
+    vbr = orgunit.VBR()
+
     if (
         selection_provinces
         and "selection_provinces" in setup
         and len(setup["selection_provinces"]) > 0
     ):
         for province in setup["selection_provinces"]:
-            group_of_ou = rbv.GroupOrgUnits(
+            group_of_ou = orgunit.GroupOrgUnits(
                 province,
-                quality_indicators,
             )
             nb_tot = 0
             for ou in orgunits:
@@ -1298,8 +1346,6 @@ def save_simulation_environment(quant, setup, model_name, selection_provinces):
                             ou,
                             False,
                             temp,
-                            quality_df,
-                            quality_indicators,
                         )
                     )
                     nb_tot += 1
@@ -1312,12 +1358,11 @@ def save_simulation_environment(quant, setup, model_name, selection_provinces):
             current_run.log_info(
                 f"Saved data for province= {province}. Total number of orgunits= {nb_tot}"
             )
-            regions.append(group_of_ou)
+            vbr.groups.append(group_of_ou)
 
     else:
-        group_of_ou = rbv.GroupOrgUnits(
+        group_of_ou = orgunit.GroupOrgUnits(
             "national",
-            quality_indicators,
         )
         nb_tot = 0
         for ou in orgunits:
@@ -1329,8 +1374,6 @@ def save_simulation_environment(quant, setup, model_name, selection_provinces):
                         ou,
                         False,
                         temp,
-                        quality_df,
-                        quality_indicators,
                     )
                 )
                 nb_tot += 1
@@ -1341,7 +1384,7 @@ def save_simulation_environment(quant, setup, model_name, selection_provinces):
                     )
 
         current_run.log_info(f"Saved data at national level. Total number of orgunits= {nb_tot}")
-        regions.append(group_of_ou)
+        vbr.groups.append(group_of_ou)
 
     base_path = f"{workspace.files_path}/pipelines/initialize_vbr/initialization_simulation"
     os.makedirs(base_path, exist_ok=True)
@@ -1349,7 +1392,7 @@ def save_simulation_environment(quant, setup, model_name, selection_provinces):
     path = f"{base_path}/{name}"
 
     with open(path, "wb") as file:
-        pickle.dump(regions, file)
+        pickle.dump(vbr, file)
 
     current_run.log_info(
         f"Saved the simulation environment in {path}. You can now run the second pipeline."
@@ -1538,7 +1581,7 @@ def get_months_in_quarter(q) -> list:
     return months
 
 
-def get_periods(period, window) -> list:
+def get_periods(period, window) -> Generator:
     """Get the periods.
 
     Parameters
