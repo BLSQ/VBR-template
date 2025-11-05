@@ -89,7 +89,7 @@ def initialize_vbr(
     """Pipeline to extract the necessary data.
 
     We use Hesabu and DHIS2 to obtain information about different health centers.
-    We obtain both quantity and quality data, and we store them in the files quantity_data.csv and quality_data.csv.
+    We obtain quantity data.
     """
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
@@ -117,9 +117,9 @@ def initialize_vbr(
 def clean_quantity_data(quant: pl.DataFrame) -> pd.DataFrame:
     """
     Clean the quantity data before saving it in a pickle file.
-    (1) We remove the rows where the declared is 0
+    (1) We remove the rows where the declared and validated is 0
     (2) We remove the rows where the declared is NaN
-    (3) We remove the rows where the validated is NaN
+    (3) If validated is NaN, we put a 0.
 
     Parameters
     ----------
@@ -156,7 +156,9 @@ def clean_quantity_data(quant: pl.DataFrame) -> pd.DataFrame:
         current_run.log_info(
             f"Removing {count_val_nan} rows where validated is NaN ({100 * count_val_nan / total_rows:.2f}%)"
         )
-        quant = quant.filter(~ser_val_nan)
+        quant = quant.with_columns(
+            pl.when(pl.col("val").is_null()).then(0).otherwise(pl.col("val")).alias("val")
+        )
 
     return quant.to_pandas()
 
@@ -279,6 +281,7 @@ def change_data_values(
 def join_data_values(data_to_concat) -> Tuple[pl.DataFrame, dict]:
     """
     Put the declared, validated and tarif_def data values together.
+    Note that we will assume that the tarif values are at country level.
 
     Parameters
     ----------
@@ -790,10 +793,9 @@ def extract_data_values_for_quarter_and_payment(
         if os.path.exists(output_file) and not extract:
             data_values = pl.read_csv(output_file)
         else:
-            # data_values = extract_data_value_for_indicator_quarter_and_payment(
-            #    dhis, list_months, quarter, indicator, indicator_dict
-            # )
-            # CHANGE THIS
+            data_values = extract_data_value_for_indicator_quarter_and_payment(
+                dhis, list_months, quarter, indicator, indicator_dict
+            )
             data_values = pl.DataFrame()
             if len(data_values) > 0:
                 data_values.write_csv(output_file)

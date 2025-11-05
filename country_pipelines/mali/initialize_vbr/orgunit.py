@@ -2,7 +2,7 @@ import pandas as pd
 
 from RBV_package import dates
 
-import config_package as config
+import config
 
 from openhexa.toolbox.dhis2.periods import Month, Quarter
 
