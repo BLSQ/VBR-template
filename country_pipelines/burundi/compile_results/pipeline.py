@@ -7,6 +7,7 @@ from openhexa.sdk import (
     parameter,
 )
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 import warnings
 import os
@@ -123,6 +124,26 @@ def create_verification_file(
     df_detailed["date"] = df_detailed["periode"].map(str_to_date)
     df_detailed["bool_verified"] = df_detailed["bool_verified"].astype(int)
 
+    conditions = [
+        (df_detailed["benefice_complet_vbr"] > 0) & (df_detailed["bool_verified"] == 1),
+        (df_detailed["benefice_complet_vbr"] >= 0) & (df_detailed["bool_verified"] == 0),
+        (df_detailed["benefice_complet_vbr"] < 0) & (df_detailed["bool_verified"] == 1),
+        (df_detailed["benefice_complet_vbr"] < 0) & (df_detailed["bool_verified"] == 0),
+    ]
+
+    # Corresponding choices
+    choices = [
+        "Bénéfique & Vérifié",
+        "Bénéfique & Non vérifié",
+        "Non bénéfique & Vérifié",
+        "Non bénéfique & Non vérifié",
+    ]
+
+    # Apply the conditions
+    df_detailed["category"] = np.select(
+        conditions, choices, default="Not declared services for the period"
+    )
+
     df_list.to_csv(output_path_list, index=False)
     current_run.log_info(f"For the {verification_db}, the columns are: {df_list.columns}")
 
@@ -133,10 +154,10 @@ def create_verification_file(
 
     if save_db:
         engine = create_engine(environ["WORKSPACE_DATABASE_URL"])
-        df_list.to_sql(verification_db, con=engine, if_exists="replace")
-        current_run.log_info(f"Saved the {verification_db} in the database.")
         df_detailed.to_sql(detailed_information_db, con=engine, if_exists="replace")
         current_run.log_info(f"Saved the {detailed_information_db} in the database.")
+        df_list.to_sql(verification_db, con=engine, if_exists="replace")
+        current_run.log_info(f"Saved the {verification_db} in the database.")
 
 
 def create_simulation_statistics_file(
@@ -198,7 +219,7 @@ def create_suivi_des_risques(
     """
     Create the suivi des risques files from the quantqual data paths.
     """
-    regex_quant = "^quantity_data_(.+)\.csv$"
+    regex_quant = r"^quantity_data_(.+)\.csv$"
     files_quant = []
 
     for filename in os.listdir(quant_path):
