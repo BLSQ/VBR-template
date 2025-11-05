@@ -19,7 +19,7 @@ from RBV_package import dates
 
 import orgunit
 from orgunit import Orgunit, GroupOrgUnits, VBR
-import config_package as config
+import config
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -208,10 +208,7 @@ def run_vbr(
     end = get_month_or_quarter(mois_fin, year_fin, frequence)
     list_periods = orgunit.get_date_series(str(start), str(end), frequence)
 
-    path_data = create_folders(folder)
-    path_verif = create_subfolder(path_data, "verification_information")
-    path_stats = create_subfolder(path_data, "simulation_statistics")
-    path_service = create_subfolder(path_data, "service_information")
+    path_verif, path_stats, path_service = create_folders(folder)
 
     for period in list_periods:
         simulate_period(vbr_object, model, period, path_verif, path_stats, path_service)
@@ -388,7 +385,7 @@ def set_vbr_values(
     vbr_object.set_verification_gain_mod(verification_gain_mod)
 
 
-def create_folders(folder: str) -> str:
+def create_folders(folder: str) -> tuple[str, str, str]:
     """
     Create the necessay folders for the simulation.
 
@@ -399,37 +396,24 @@ def create_folders(folder: str) -> str:
 
     Returns
     -------
-    path_data : str
-        Path to the folder where we will store the results.
+    verification : str
+        Path to store the verification information.
+    simulation : str
+        Path to store the simulation statistics.
+    service : str
+        Path to store the service information.
     """
-    base_path = os.path.join(workspace.files_path, "pipelines/run_vbr", folder)
+    base_path = os.path.join(workspace.files_path, "pipelines/run_vbr", folder, "data")
     subdirs = ["verification_information", "simulation_statistics", "service_information"]
 
     for subdir in subdirs:
-        os.makedirs(os.path.join(base_path, "data", subdir), exist_ok=True)
+        os.makedirs(os.path.join(base_path, subdir), exist_ok=True)
 
-    return os.path.join(base_path, "data")
+    verification = os.path.join(base_path, "verification_information")
+    simulation = os.path.join(base_path, "simulation_statistics")
+    service = os.path.join(base_path, "service_information")
 
-
-def create_subfolder(folder: str, subfolder: str) -> str:
-    """
-    From a folder and a path, create a full path.
-
-    Parameters
-    ----------
-    folder : str
-        Name of the full path to the parent folder.
-    subfolder : str
-        Name of the subfolder to be created.
-
-    Returns
-    -------
-    full_path : str
-        Full path to the subfolder.
-    """
-    full_path = os.path.join(folder, subfolder)
-    os.makedirs(full_path, exist_ok=True)
-    return full_path
+    return verification, simulation, service
 
 
 def get_month_or_quarter(mois: int, year: int, frequence: str) -> str:
