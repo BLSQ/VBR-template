@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "model",
     name="Name of the initialization file",
     help="It comes from the first pipeline",
-    default="model_2810",
+    default="model",
     type=str,
     required=True,
 )
@@ -41,13 +41,13 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="If frequency = quarter: put a month that is part of the quarter",
-    default=7,
+    default=10,
 )
 @parameter(
     "year_start",
     name="Start year for the simulation",
     type=int,
-    choices=[2023, 2024, 2025, 2026],
+    choices=[2025, 2026, 2027],
     default=2025,
 )
 @parameter(
@@ -62,7 +62,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "year_fin",
     name="End year for the simulation",
     type=int,
-    choices=[2023, 2024, 2025, 2026],
+    choices=[2025, 2026, 2027],
     default=2026,
 )
 @parameter(
@@ -92,8 +92,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "prix_verif",
     name="Cost of verification",
     type=int,
-    help="How much it costs to verify a center, including transport, per diems, etc (euros)",
-    default=150,
+    help="How much it costs to verify a center, including transport, per diems, etc (XOF)",
+    default=100000,
 )
 @parameter(
     "paym_method_nf",
@@ -555,9 +555,11 @@ def set_ou_values(vbr_object: VBR, ou: Orgunit, period: str):
     ou.set_period_df(vbr_object)
     ou.calculate_ecart_median_window()
     ou.calculate_taux_median_window()
-    ou.get_gain_verif_period(vbr_object.paym_method_nf)
-    ou.gains_period(vbr_object)
-    ou.get_benefice_vbr_window(vbr_object.cout_verification_centre, vbr_object.period_type)
+    ou.calculate_subsidies_period(vbr_object.paym_method_nf)
+    ou.calculate_diff_subsidies_period(vbr_object)
+    ou.calculate_gain_verification_window(
+        vbr_object.cout_verification_centre, vbr_object.period_type, vbr_object.paym_method_nf
+    )
 
 
 if __name__ == "__main__":

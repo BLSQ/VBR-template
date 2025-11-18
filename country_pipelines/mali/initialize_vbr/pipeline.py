@@ -76,6 +76,13 @@ import orgunit
     type=bool,
     default=False,
 )
+@parameter(
+    "bool_clean_quant",
+    name="Clean quantity data",
+    help="Clean the quantity data after extraction.",
+    type=bool,
+    default=False,
+)
 def initialize_vbr(
     period,
     window,
@@ -85,6 +92,7 @@ def initialize_vbr(
     selection_provinces,
     extract,
     bool_hesabu_construct,
+    bool_clean_quant,
 ):
     """Pipeline to extract the necessary data.
 
@@ -110,21 +118,32 @@ def initialize_vbr(
         dhis, config_extraction, periods, data_elements_ids, extract, model_name
     )
     quant = prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name)
-    quant_clean = clean_quantity_data(quant)
+    quant_clean = clean_quantity_data(quant, model_name, bool_clean_quant)
     save_simulation_environment(quant_clean, setup, model_name, selection_provinces)
 
 
-def clean_quantity_data(quant: pl.DataFrame) -> pd.DataFrame:
+def clean_quantity_data(
+    quant: pl.DataFrame, model_name: str, bool_clean_quant: bool
+) -> pd.DataFrame:
     """
     Clean the quantity data before saving it in a pickle file.
-    (1) We remove the rows where the declared and validated is 0
-    (2) We remove the rows where the declared is NaN
-    (3) If validated is NaN, we put a 0.
+
+    There are some cleanings that we always do:
+    (1) Remove the rows where both the declared and validated is 0 or null
+    (2) Fill the null values with 0.
+
+    If clean_quantity_data is True, we do the following cleanings:
+    (1) Remove the rows where the taux > 3.
+    (2) Remove the rows where declared is null.
+    (3) Remove the rows where validated is null.
+
 
     Parameters
     ----------
     quant: pl.DataFrame
         A DataFrame containing the quantity data.
+    model_name: str
+        The name of the model we are working on.
 
     Returns
     -------
@@ -132,33 +151,54 @@ def clean_quantity_data(quant: pl.DataFrame) -> pd.DataFrame:
         A DataFrame (pandas) containing the cleaned quantity data.
     """
     total_rows = quant.height
-
-    ser_dec_val_0 = (quant["dec"] == 0) & (quant["val"] == 0)
-    if ser_dec_val_0.any():
-        count_dec_0 = quant.filter(ser_dec_val_0).height
-        current_run.log_info(
-            f"Removing {count_dec_0} rows where declared and validated are 0"
-            f" ({100 * count_dec_0 / total_rows:.2f}%)"
-        )
-        quant = quant.filter(~ser_dec_val_0)
+    extra_text = " I am removing them." if bool_clean_quant else ""
 
     ser_dec_nan = quant["dec"].is_null()
     if ser_dec_nan.any():
         count_dec_nan = quant.filter(ser_dec_nan).height
         current_run.log_info(
-            f"Removing {count_dec_nan} rows where declared is NaN ({100 * count_dec_nan / total_rows:.2f}%)"
+            f"There were {count_dec_nan} rows where declared is NaN ({100 * count_dec_nan / total_rows:.2f}%)"
+            f" {extra_text}"
         )
-        quant = quant.filter(~ser_dec_nan)
+        if bool_clean_quant:
+            quant = quant.filter(~ser_dec_nan)
+        else:
+            quant = quant.with_columns(pl.col("dec").fill_null(0))
 
     ser_val_nan = quant["val"].is_null()
     if ser_val_nan.any():
         count_val_nan = quant.filter(ser_val_nan).height
         current_run.log_info(
-            f"Removing {count_val_nan} rows where validated is NaN ({100 * count_val_nan / total_rows:.2f}%)"
+            f"There were {count_val_nan} rows where validated is NaN ({100 * count_val_nan / total_rows:.2f}%)"
+            f" {extra_text}"
         )
-        quant = quant.with_columns(
-            pl.when(pl.col("val").is_null()).then(0).otherwise(pl.col("val")).alias("val")
+        if bool_clean_quant:
+            quant = quant.filter(~ser_val_nan)
+        else:
+            quant = quant.with_columns(pl.col("val").fill_null(0))
+
+    ser_dec_val_0 = (quant["dec"] == 0) & (quant["val"] == 0)
+    if ser_dec_val_0.any():
+        count_dec_0 = quant.filter(ser_dec_val_0).height
+        current_run.log_info(
+            f"There were {count_dec_0} rows where declared and validated are 0"
+            f" ({100 * count_dec_0 / total_rows:.2f}%). Removing them."
         )
+        quant = quant.filter(~ser_dec_val_0)
+
+    ser_taux_high = quant["taux_validation"] > 3
+    if ser_taux_high.any():
+        count_taux_high = quant.filter(ser_taux_high).height
+        current_run.log_info(
+            f"There were {count_taux_high} rows where taux_validation > 3"
+            f" ({100 * count_taux_high / total_rows:.2f}%)"
+            f" {extra_text}"
+        )
+        if bool_clean_quant:
+            quant = quant.filter(~ser_taux_high)
+
+    output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/{model_name}_cleaned.csv"
+    save_csv(quant, Path(output_path))
 
     return quant.to_pandas()
 
@@ -796,7 +836,6 @@ def extract_data_values_for_quarter_and_payment(
             data_values = extract_data_value_for_indicator_quarter_and_payment(
                 dhis, list_months, quarter, indicator, indicator_dict
             )
-            data_values = pl.DataFrame()
             if len(data_values) > 0:
                 data_values.write_csv(output_file)
 
@@ -1175,9 +1214,7 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) 
         (pl.col("month").alias("quarter")),
     )
 
-    output_path = (
-        f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/{model_name}.csv"
-    )
+    output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/{model_name}_not_cleaned.csv"
     save_csv(data, Path(output_path))
 
     return data

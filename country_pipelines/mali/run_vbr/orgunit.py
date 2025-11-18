@@ -338,7 +338,7 @@ class Orgunit:
             self.month = str(period)
             self.quarter = str(dates.month_to_quarter(period))
 
-    def get_gain_verif_period(self, mode: str) -> None:
+    def calculate_subsidies_period(self, mode: str) -> None:
         """
         Calculate, for the period of the simulation, how much money we win with verification.
 
@@ -384,12 +384,16 @@ class Orgunit:
             self.subside_taux_period = pd.NA
             self.subside_val_period = pd.NA
 
-    def get_benefice_vbr_window(self, cout: int, frequence: str) -> None:
+    def calculate_gain_verification_window(
+        self, cout: int, frequence: str, payment_mode: str
+    ) -> None:
         """
         Calculate the gains from verification over the observation window.
-        NOTE: WE SHOULD CHANGE THIS ONCE WE HAVE MORE DATA,
-        RIGHT NOW WE ASSUME THAT THE PAYMENT METHOD IS COMPLET
-        AND THIS IS NOT NECESSARILY THE CASE.
+
+        NOTE: THIS CALCULATION IS NOT THE BEST. WE USE THE TAUX OF THE WINDOW TO CALCULATE
+        THE SUBSIDIES FOR NON-VERIFIED CENTERS. IN REALITY, WE SHOULD USE THE TAUX OF THE 2 QUARTERS
+        BEFORE. (WE DO NOT DO THIS YET BECAUSE THERE IS NOT ENOUGH DATA).
+
 
         Parameters
         ----------
@@ -397,6 +401,9 @@ class Orgunit:
             The cost of verification.
         frequence : str
             The frequency of the observation (e.g., "monthly", "quarterly").
+        payment_mode : str
+            The payment method for non-verified centers.
+            It can be "complet" or "tauxval".
         """
         if self.quantite_window.shape[0] == 0:
             self.benefice_vbr_window = pd.NA
@@ -404,14 +411,23 @@ class Orgunit:
 
         list_periods = self.quantite_window[frequence].unique()
         gains_vbr = []
-        quant = self.quantite_window.copy()
 
         for period in list_periods:
-            quantite_period = quant[quant[frequence] == period]
+            gain_vbr_period = cout
+            quantite_period = self.quantite_window[self.quantite_window[frequence] == period].copy()
+            list_services = quantite_period.service.unique()
+            for service in list_services:
+                quantite_period_service = quantite_period[quantite_period.service == service].copy()
 
-            subside_ver = quantite_period["subside_avec_verification"].sum()
-            subside_non_ver = quantite_period["subside_sans_verification"].sum()
-            gain_vbr_period = subside_ver + cout - subside_non_ver
+                self.calculate_mult_factor(payment_mode, quantite_period_service, service)
+                subside_ver = (
+                    quantite_period_service["subside_sans_verification"]
+                    * quantite_period_service["multiplication_factor"]
+                ).sum()
+                subside_non_ver = quantite_period_service["subside_sans_verification"].sum()
+                gain_vbr_period_service = subside_ver - subside_non_ver
+                gain_vbr_period += gain_vbr_period_service
+
             gains_vbr.append(gain_vbr_period)
 
         self.benefice_vbr_window = median(gains_vbr)
@@ -440,7 +456,7 @@ class Orgunit:
         else:
             raise Exception(f"Payment method {mode} not recognized.")
 
-    def gains_period(self, vbr_object: VBR) -> None:
+    def calculate_diff_subsidies_period(self, vbr_object: VBR) -> None:
         """
         Define some quantities about the cost/gain of verification for the period of the simulation.
 
