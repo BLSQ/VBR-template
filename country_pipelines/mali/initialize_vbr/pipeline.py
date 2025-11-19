@@ -37,16 +37,16 @@ import orgunit
     type=str,
     help="Last period to extract data from (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202512",
+    default="202509",
 )
 @parameter(
     "window",
     name="Number of months to consider",
     type=int,
     required=True,
-    default=12,
+    default=6,
 )
-@parameter("model_name", name="Name of the model", type=str, default="model_2810", required=True)
+@parameter("model_name", name="Name of the model", type=str, default="model_1911", required=True)
 @parameter(
     "dhis_con",
     type=DHIS2Connection,

@@ -584,11 +584,26 @@ class GroupOrgUnits:
         list_cols_df_verification = config.list_cols_df_verification
 
         for ou in self.members:
+            if ou.is_verified:
+                if ou.benefice_vbr_period is pd.NA:
+                    category = pd.NA
+                elif ou.benefice_vbr_period > 0:
+                    category = "Bénéfique & Vérifié"
+                else:
+                    category = "Non bénéfique & Vérifié"
+            else:
+                if ou.benefice_vbr_period is pd.NA:
+                    category = pd.NA
+                elif ou.benefice_vbr_period > 0:
+                    category = "Bénéfique & Non vérifié"
+                else:
+                    category = "Non bénéfique & Non vérifié"
+
             new_row = (
                 [ou.id]
                 + [ou.period]
                 + ou.locations
-                + [ou.risk, ou.is_verified, ou.benefice_vbr_period]
+                + [ou.risk, ou.is_verified, ou.benefice_vbr_period, category]
                 + [
                     ou.subside_dec_period,
                     ou.subside_val_period,

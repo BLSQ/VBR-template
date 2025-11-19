@@ -30,11 +30,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "model",
     name="Name of the initialization file",
     help="It comes from the first pipeline",
-    default="model",
+    default="model_1911",
     type=str,
     required=True,
 )
-@parameter("folder", name="Output folder name", type=str, default="Extraction")
+@parameter("folder", name="Output folder name", type=str, default="to_compile")
 @parameter(
     "mois_start",
     name="Start month of the simulation",
@@ -129,7 +129,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Risk calculation method",
     type=str,
     choices=["ecart", "verifgain"],
-    default="verifgain",
+    default="ecart",
 )
 @parameter(
     "seuil_max_bas_risk",
@@ -496,7 +496,7 @@ def create_file_names(
     """
     file_name_per_group = (
         f"model___{model}"
-        f"month___{period}"
+        f"-month___{period}"
         f"-frq___{vbr_object.period_type}"
         f"-obswin___{vbr_object.window}"
         f"-minnb___{vbr_object.nb_periods}"
@@ -513,7 +513,7 @@ def create_file_names(
     )
     file_name_stats = (
         f"model___{model}"
-        f"month___{period}"
+        f"-month___{period}"
         f"-frq___{vbr_object.period_type}"
         f"-obswin___{vbr_object.window}"
         f"-minnb___{vbr_object.nb_periods}"
