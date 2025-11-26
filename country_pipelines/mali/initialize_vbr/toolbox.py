@@ -339,11 +339,21 @@ def calcul_ecarts(q) -> pl.DataFrame:
     """
     q = q.with_columns(
         pl.when(pl.col("dec") != 0)
-        .then(1 - (pl.col("dec") - pl.col("val")) / pl.col("dec"))
+        .then(1 - (pl.col("dec") - pl.coalesce([pl.col("val"), pl.lit(0)])) / pl.col("dec"))
+        .when(
+            ((pl.col("dec") == 0) | pl.col("dec").is_null())
+            & ((pl.col("val").is_not_null()) & (pl.col("val") != 0))
+        )
+        .then(1)
         .otherwise(None)
         .alias("taux_validation"),
         pl.when(pl.col("dec") != 0)
-        .then((pl.col("dec") - pl.col("val")).abs() / pl.col("dec"))
+        .then((pl.col("dec") - pl.coalesce([pl.col("val"), pl.lit(0)])).abs() / pl.col("dec"))
+        .when(
+            ((pl.col("dec") == 0) | pl.col("dec").is_null())
+            & ((pl.col("val").is_not_null()) & (pl.col("val") != 0))
+        )
+        .then(0)
         .otherwise(None)
         .alias("ecart_dec_val"),
     )

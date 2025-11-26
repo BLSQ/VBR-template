@@ -100,8 +100,10 @@ def categorize_quantity(center: Orgunit, vbr_object: VBR) -> None:
     vbr_object: VBR
         Object containing the VBR configuration.
     """
-    if vbr_object.quantity_risk_calculation == "ecart":
-        categorize_quantity_ecart(center, vbr_object)
+    if vbr_object.quantity_risk_calculation == "ecart_median":
+        categorize_quantity_ecart(center, vbr_object, "median")
+    elif vbr_object.quantity_risk_calculation == "ecart_moyen":
+        categorize_quantity_ecart(center, vbr_object, "mean")
     elif vbr_object.quantity_risk_calculation == "verifgain":
         categorize_quantity_verifgain(center, vbr_object)
     else:
@@ -113,7 +115,7 @@ def categorize_quantity(center: Orgunit, vbr_object: VBR) -> None:
         )
 
 
-def categorize_quantity_ecart(center: Orgunit, vbr_object: VBR) -> None:
+def categorize_quantity_ecart(center: Orgunit, vbr_object: VBR, method: str) -> None:
     """
     Categorize the quantity risk of the center using the difference between
     the declared and validated values (the "ecart" method).
@@ -124,12 +126,19 @@ def categorize_quantity_ecart(center: Orgunit, vbr_object: VBR) -> None:
         Object containing the information from the particular Organizational Unit
     vbr_object: VBR
         Object containing the VBR configuration.
+    method: str
+        Method to use for the calculation ("median" or "mean").
     """
-    if center.ecart_median_window > vbr_object.seuil_max_moyen_risk:
+    if method == "median":
+        indicator = center.ecart_median_window
+    elif method == "mean":
+        indicator = center.ecart_moyen_window
+
+    if indicator > vbr_object.seuil_max_moyen_risk:
         center.risk_quantite = "high"
-    elif center.ecart_median_window > vbr_object.seuil_max_bas_risk:
+    elif indicator > vbr_object.seuil_max_bas_risk:
         center.risk_quantite = "moderate"
-    elif center.ecart_median_window >= 0:
+    elif indicator >= 0:
         center.risk_quantite = "low"
     else:
         center.risk_quantite = "weird"

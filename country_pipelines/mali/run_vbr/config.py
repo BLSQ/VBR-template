@@ -1,10 +1,10 @@
 list_cols_df_verification = [
     "ID",
-    "Period",
+    "Periode",
     "level_1_uid",
     "level_1_name",
     "level_2_uid",
-    "level_2_name",
+    "Province",
     "level_3_uid",
     "level_3_name",
     "level_4_uid",
@@ -16,6 +16,7 @@ list_cols_df_verification = [
     "Risk category",
     "Is the center verified?",
     "Benefice complet VBR (if positive, VBR is beneficial) - period",
+    "Category of benefice and verification",
     "Subsidies based in declared values in the period",
     "Subsidies based in validated values in the period",
     "Subsidies based in declared values times the taux in the period",
@@ -23,12 +24,14 @@ list_cols_df_verification = [
     "Difference in subsidies declared x taux vs validated in the period",
     "Median benefice complet VBR - window",
     "Median taux validation - window",
+    "Mean taux validation - window",
     "Median ecart - window",
+    "Mean ecart - window",
 ]
 
 list_cols_df_stats = [
     "Province",
-    "Period",
+    "Periode",
     "Total number of centers",
     "Number of centers uneligible",
     "Number of centers high risk",
