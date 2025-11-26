@@ -128,8 +128,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "quantity_risk_calculation",
     name="Risk calculation method",
     type=str,
-    choices=["ecart", "verifgain"],
-    default="ecart",
+    choices=["ecart_median", "verifgain", "ecart_moyen"],
+    default="ecart_moyen",
 )
 @parameter(
     "seuil_max_bas_risk",
@@ -553,8 +553,8 @@ def set_ou_values(vbr_object: VBR, ou: Orgunit, period: str):
     ou.set_period_verification(vbr_object, period)
     ou.set_window_df(vbr_object)
     ou.set_period_df(vbr_object)
-    ou.calculate_ecart_median_window()
-    ou.calculate_taux_median_window()
+    ou.calculate_ecart_window()
+    ou.calculate_taux_window()
     ou.calculate_subsidies_period(vbr_object.paym_method_nf)
     ou.calculate_diff_subsidies_period(vbr_object)
     ou.calculate_gain_verification_window(

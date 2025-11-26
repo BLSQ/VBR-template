@@ -24,7 +24,9 @@ list_cols_df_verification = [
     "Difference in subsidies declared x taux vs validated in the period",
     "Median benefice complet VBR - window",
     "Median taux validation - window",
+    "Mean taux validation - window",
     "Median ecart - window",
+    "Mean ecart - window",
 ]
 
 list_cols_df_stats = [

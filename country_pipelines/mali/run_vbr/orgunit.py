@@ -6,7 +6,7 @@ import config
 
 from openhexa.toolbox.dhis2.periods import Month, Quarter
 
-from statistics import median
+from statistics import mean
 from collections.abc import Generator
 
 
@@ -171,6 +171,8 @@ class Orgunit:
     ecart_median_window: np.float64
         The median of the ecart for the center, calculated over the observation window and services.
         The closer to 0, the better the center is doing.
+    ecart_moyen_window: np.float64
+        The mean of the ecart for the center, calculated over the observation window and services.
     id: str
         The id of the organizational unit.
     is_verified: bool
@@ -209,6 +211,9 @@ class Orgunit:
         The median of the taux_validation for the center,
         calculated over the observation window and service.
         The closer to 1, the better the center is doing.
+    taux_validation_moyen_window: np.float64
+        The mean of the taux_validation for the center,
+        calculated over the observation window and service.
     taux_validation_par_service_window: pd.DataFrame
         A dataframe with the median taux_validation per service, calculated over the observation window.
     """
@@ -235,7 +240,7 @@ class Orgunit:
         self.diff_subsidies_decval_period = None
         self.diff_subsidies_tauxval_period = None
 
-        self.ecart_median_per_service_window = pd.DataFrame()
+        self.ecart_mean_per_service_window = pd.DataFrame()
         self.ecart_median_window = None
         self.taux_validation_par_service_window = pd.DataFrame()
         self.taux_validation_median_window = None
@@ -420,17 +425,17 @@ class Orgunit:
                 quantite_period_service = quantite_period[quantite_period.service == service].copy()
 
                 self.calculate_mult_factor(payment_mode, quantite_period_service, service)
-                subside_ver = (
+                subside_non_ver = (
                     quantite_period_service["subside_sans_verification"]
                     * quantite_period_service["multiplication_factor"]
                 ).sum()
-                subside_non_ver = quantite_period_service["subside_sans_verification"].sum()
-                gain_vbr_period_service = subside_ver - subside_non_ver
+                subside_ver = quantite_period_service["subside_avec_verification"].sum()
+                gain_vbr_period_service = -subside_non_ver + subside_ver
                 gain_vbr_period += gain_vbr_period_service
 
             gains_vbr.append(gain_vbr_period)
 
-        self.benefice_vbr_window = median(gains_vbr)
+        self.benefice_vbr_window = mean(gains_vbr)
 
     def calculate_mult_factor(
         self, mode: str, quantite_period_service: pd.DataFrame, service: str
@@ -487,9 +492,10 @@ class Orgunit:
             else:
                 raise Exception(f"Payment method {vbr_object.paym_method_nf} not recognized.")
 
-    def calculate_ecart_median_window(self):
+    def calculate_ecart_window(self):
         """
-        Get the median of the ecart, in general and per service.
+        Get the average of the ecart, in general and per service.
+        (We calculate the average because we have little periods)
 
         The ecart is a number from 0 to 1 that represents the difference between
             the declared, verified and validated values.
@@ -502,17 +508,19 @@ class Orgunit:
         else:
             raise Exception("No ecart column found in the quantitative data.")
 
-        self.ecart_median_per_service_window = (
+        self.ecart_mean_per_service_window = (
             self.quantite_window.groupby("service", as_index=False)[col]
-            .median()
+            .mean()
             .reset_index()
-            .rename(columns={col: "ecart_median"})
+            .rename(columns={col: "ecart_mean"})
         )
-        self.ecart_median_window = self.ecart_median_per_service_window["ecart_median"].median()
+        # Since we have so little data, it makes more sense to do the median directly.
+        self.ecart_median_window = self.quantite_window[col].median()  # Here we keep the median
+        self.ecart_moyen_window = self.quantite_window[col].mean()  # Here we calculate the mean
 
-    def calculate_taux_median_window(self):
+    def calculate_taux_window(self):
         """
-        Get the median of the taux validation, in general and per service.
+        Get the mean of the taux validation, in general and per service.
         (The taux validation is 1 - (dec - val)/dec).
         The closer to 1, the better the center is doing.
 
@@ -520,11 +528,11 @@ class Orgunit:
         """
         self.taux_validation_par_service_window = self.quantite_window.groupby(
             "service", as_index=False
-        )["taux_validation"].median()
+        )["taux_validation"].mean()
 
-        self.taux_validation_median_window = self.taux_validation_par_service_window[
-            "taux_validation"
-        ].median()
+        # Since we have so little data, it makes more sense to do the median directly.
+        self.taux_validation_median_window = self.quantite_window["taux_validation"].median()
+        self.taux_validation_moyen_window = self.quantite_window["taux_validation"].mean()
 
     def mix_risks(self):
         """
@@ -614,7 +622,9 @@ class GroupOrgUnits:
                 + [
                     ou.benefice_vbr_window,
                     ou.taux_validation_median_window,
+                    ou.taux_validation_moyen_window,
                     ou.ecart_median_window,
+                    ou.ecart_moyen_window,
                 ]
             )
             rows.append(new_row)
@@ -641,7 +651,7 @@ class GroupOrgUnits:
                 if isinstance(ou.taux_validation_par_service_window, pd.DataFrame):
                     taux_validation = ou.taux_validation_par_service_window[
                         ou.taux_validation_par_service_window["service"] == service
-                    ]["taux_validation"].median()
+                    ]["taux_validation"].mean()
 
                     if pd.isnull(taux_validation):
                         taux_validation = ou.taux_validation_median_window
@@ -649,10 +659,10 @@ class GroupOrgUnits:
                 else:
                     taux_validation = pd.NA
 
-                if isinstance(ou.ecart_median_per_service_window, pd.DataFrame):
-                    ecart = ou.ecart_median_per_service_window[
-                        ou.ecart_median_per_service_window["service"] == service
-                    ]["ecart_median"].median()
+                if isinstance(ou.ecart_mean_per_service_window, pd.DataFrame):
+                    ecart = ou.ecart_mean_per_service_window[
+                        ou.ecart_mean_per_service_window["service"] == service
+                    ]["ecart_median"].mean()
 
                     if pd.isnull(ecart):
                         ecart = ou.ecart_median_window
