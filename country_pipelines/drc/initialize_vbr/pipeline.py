@@ -16,6 +16,7 @@ from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
 import config
+import toolbox
 
 warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
@@ -713,7 +714,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
             if len(org_unit_ids) > 0:
-                data_extraction.fetch_data_values(
+                toolbox.fetch_data_values(
                     dhis,
                     deg_external_reference,
                     org_unit_ids,
@@ -721,6 +722,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                     package["activities"],
                     package_id,
                     f"{workspace.files_path}/pipelines/initialize_vbr/packages",
+                    extract,
                 )
                 # Here, we input the DHIS2 connection, the degree of external reference, the list of IDs of the organization units,
                 # the periods we are interested in, the activities we are interested in and the package ID.
@@ -824,7 +826,7 @@ def get_periods(period, window):
     frequency = get_period_type(period)
     start, end = get_start_end(period, window, frequency)
     current_run.log_info(f"Periods considered: {start} to {end}")
-    return dates.get_date_series(start, end, frequency)
+    return toolbox.get_date_series(start, end, frequency)
 
 
 def get_period_type(period):
