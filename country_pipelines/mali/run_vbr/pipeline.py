@@ -150,7 +150,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Minimum verification gain for low risk centers",
     help="Per month",
     type=int,
-    default=100,
+    default=100000,
     required=False,
 )
 @parameter(
@@ -158,7 +158,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     name="Minimum verification gain for moderate risk centers",
     help="Per month",
     type=int,
-    default=75,
+    default=75000,
     required=False,
 )
 def run_vbr(

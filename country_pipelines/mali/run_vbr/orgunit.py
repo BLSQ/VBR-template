@@ -662,7 +662,7 @@ class GroupOrgUnits:
                 if isinstance(ou.ecart_mean_per_service_window, pd.DataFrame):
                     ecart = ou.ecart_mean_per_service_window[
                         ou.ecart_mean_per_service_window["service"] == service
-                    ]["ecart_median"].mean()
+                    ]["ecart_mean"].mean()
 
                     if pd.isnull(ecart):
                         ecart = ou.ecart_median_window
