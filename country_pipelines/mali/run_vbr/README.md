@@ -26,7 +26,7 @@ The pipeline has 2 possible uses.
 - **proportion_selection_bas_risque**: Percentage of low risk centers selected for verification.
 - **proportion_selection_moyen_risque**: Percentage of moderate risk centers selected for verification.
 - **proportion_selection_haut_risque**: Percentage of high risk centers selected for verification.
-- **quantity_risk_calculation**: Risk calculation method (`ecart` or `verifgain`).
+- **quantity_risk_calculation**: Risk calculation method (`ecart_median` or `ecart_moyen` or `verifgain`).
 - **seuil_max_bas_risk**: Threshold for low risk centers. We use it only if `quantity_risk_calculation` is `ecart`.
 - **seuil_max_moyen_risk**: Threshold for moderate risk centers. We use it only if `quantity_risk_calculation` is `ecart`.
 - **verification_gain_low**: Minimum verification gain for low risk centers. We use it only if `quantity_risk_calculation` is `verifgain`.
@@ -96,13 +96,19 @@ The pipeline will produce 3 output CSV files. All of them are stored under `pipe
    - For each organizational unit in the group (`simulate_period_ou()`): 
      - We set the organizational unit values for the period. (`set_ou_values()`).
         - Note that the way we are defining the values for each period is not set in stone. If we want the ecart, or the taux validation to be calculated in a different way, we can change it here.
-        - I am especially concerned about the way we calculate the benefit from verifying/not verifying the centers, inside the method `get_benefice_vbr_window`. Right now, we assume that we will pay non-verified centers based on their declared values, but this might not be the case. We probably want to change this once we have more data.
+        - I am especially concerned about the way we calculate the benefit from verifying/not verifying the centers, inside the method `get_benefice_vbr_window`. Right now, we use the same 6 months to calculate the gain and to calculate the taux -- ideally, we would calculate the taux with older months. We might want to change this once we have more data. 
     - We check if the organizational unit is eligible for verification. (`eligible_for_vbr()` in `vbr_custom.py`).
         - Note that the way we are defining the eligibility is not set in stone. If we want to add new conditions, we can do it here.
     - We categorize the organizational unit based on its risk. (`categorize_quantity()` in `vbr_custom.py`).
         - Note that the way we are categorizing the risk is not set in stone. In fact, once we have more data, we will probably want to try different methods. We can do it here.
     - We decide if the organizational unit will be verified or not. (`set_verification()`), based on their risk category.
-    
+
+---
+## Ways of characterizing risk
+Right now, the pipeline has 3 methods for characterizing the risk of the centers. They are implemented in the function `categorize_quantity()` in `vbr_custom.py`. We might want to change them, or add new ones, once we have more data.
+- **Ecart médian (`ecart_median`)**: We calculate the median of the absolute differences between declared and validated quantities in the past verification periods. We then compare this median to two thresholds (`seuil_max_bas_risk` and `seuil_max_moyen_risk`) to categorize the risk as low, medium, or high.
+- **Ecart moyen (`ecart_moyen`)**: Similar to the previous method, but we use the mean of the absolute differences instead of the median.
+- **Gain de vérification (`verifgain`)**: We calculate the average financial gain from verification in past periods. We then compare this gain to two thresholds (`verification_gain_low` and `verification_gain_mod`) to categorize the risk as low, medium, or high.    
 
 ---
 ## How to use the pipeline for choosing the risk categorization method
