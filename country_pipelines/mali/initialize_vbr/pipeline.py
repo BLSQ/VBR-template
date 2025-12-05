@@ -102,21 +102,25 @@ def initialize_vbr(
     dhis = get_dhis2(dhis_con)
     hesabu = get_hesabu(hesabu_con)
     setup = get_setup()
+    periods = get_periods_dict(period, window)
+
+    ous_ref = get_organisation_units(dhis)
     contracts, list_org_units = fetch_contracts(
         dhis, setup["dhis2_program_id"], model_name, extract
     )
+
     hesabu_descriptor = fetch_hesabu_descriptor(
         hesabu, setup["hesabu_project_id"], bool_hesabu_construct
     )
-    ous_ref = get_organisation_units(dhis)
     config_extraction = construct_config_extraction(
         dhis, bool_hesabu_construct, hesabu_descriptor, ous_ref, list_org_units, model_name
     )
-    periods = get_periods_dict(period, window)
     data_elements_ids = construct_de_df(hesabu_descriptor, bool_hesabu_construct)
+
     values_to_use = extract_data_values(
         dhis, config_extraction, periods, data_elements_ids, extract, model_name
     )
+
     quant = prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name)
     quant_clean = clean_quantity_data(quant, model_name, bool_clean_quant)
     save_simulation_environment(quant_clean, setup, model_name, selection_provinces)
