@@ -16,6 +16,7 @@ This pipeline extracts, cleans, and processes quantitative data from DHIS2 and H
 - **selection_provinces**: If true, only data for specified provinces is saved (provinces listed in the input JSON).
 - **extract**: If true, re-extract all data from DHIS2, even if previously extracted.
 - **bool_hesabu_construct**: If true, construct the Hesabu descriptor from the Hesabu instance.
+- **bool_clean_quant**: If true, some extra cleaning steps are applied to the quantity data.
 
 ---
 
@@ -35,6 +36,9 @@ This pipeline extracts, cleans, and processes quantitative data from DHIS2 and H
 
 - **quantity_data.csv**  
   Per service, organizational unit, and period: declared, validated, and tariff values, plus indicators and subsidy calculations. It is saved under `data/quantity_data/`, prefixed with the model name. Once we have more data, we will want to explore this file. It will allow us to check that the data saved in DHIS2 makes sense.
+  There will be two kinds of files saved:
+   - One with the raw data (without any cleaning steps done to it).
+   - One with the clean data that will be used in the next pipeline (The level of cleaning depends on the `bool_clean_quant` parameter).
 - **contracts.csv**  
   Data on contracts and organizational units extracted from DHIS2. It is saved under `data/contracts/`, with the model name as a prefix.
 - **service inconsistencies**  
@@ -55,6 +59,7 @@ Additionally, for each payment mode and period, the following files are saved:
 - **pipeline.py**: Main script orchestrating the extraction, cleaning, and saving of data.
 - **orgunit.py**: Contains the `Orgunit`, `GroupOrgUnits`, and `VBR` classes used to structure and serialize the simulation environment.
 - **toolbox.py**: Utility functions for saving/loading CSV, JSON, Parquet files, extracting datasets, calculating indicators, and handling dates.
+- **config.py**: Contains some of the the hard-coded constants used in the pipeline.
 
 ---
 
@@ -64,7 +69,7 @@ Additionally, for each payment mode and period, the following files are saved:
    - In `get_dhis2()` we establish a connection to DHIS2.
    - In `get_hesabu()` we establish a connection to Hesabu.
    - In `get_setup()` we load the setup configuration.
-   - In `get_period_dicts()` we construct a dictionary that informs us which periods we need to extract data from, based on the parameters given by the user. We have the periods in both monthly and quarterly format.
+   - In `get_periods_dict()` we construct a dictionary that informs us which periods we need to extract data from, based on the parameters given by the user. We have the periods in both monthly and quarterly format.
 
 2. **Fetch relevant metadata**
    - In `get_organisation_units()` we extract organizational unit metadata from DHIS2 using the specified program ID. We will use this data to extract the relevant VBR data for the correct organizational units.
@@ -76,6 +81,7 @@ Additionally, for each payment mode and period, the following files are saved:
        - We extract from DHIS2 a list of all of the datasets with the dataElements that they contain. 
        - We iterate over the payment modes defined in the Hesabu descriptor. For each of them, we iterate over the three indicators (declared, validated, tariff). For each of the indicators, we find a list of the dataElements that contain their information. We then find the dataset that contains those dataElements, and the organizational units linked to that dataset.
        - We then make sure, for each of the payments, that we have the information for all of the relevant indicators. We also check for inconsistencies between the Hesabu descriptor, the DHIS2 datasets and the contracts. We save those inconsistencies to Parquet files for later exploration.
+   - In `construct_de_df()` we build a DataFrame that links the dataElements ids to the services they represent. This will allow us to add the service name to each of the extracted dataElements, and merge the corresponding declared, validated and tariff values together later on.
 
 4. **Extract Data from DHIS2**
    - In `extract_data_values()` we extract the relevant data from DHIS2, using the configuration constructed in the previous step. 
@@ -94,8 +100,11 @@ Additionally, for each payment mode and period, the following files are saved:
 6. **Clean Quantity Data**
    - In `clean_quantity_data()` we clean the combined quantity data by: 
       - Removing rows where both declared and validated values are zero.
+      - Filling the null values with zero.
+   - On top of that, if the `bool_clean_quant` parameter is true, we apply additional cleaning steps:
+      - Remove the rows where the validated is a lot bigger than the declared (taux > 3). 
       - Removing rows where declared is NaN.
-      - Setting validated to zero if it is NaN.
+      - Removing rows where validated is NaN.
 Currently, cleaning is minimal. As more data becomes available, consider enhancing this function.
 
 7. **Save Simulation Environment**
@@ -107,8 +116,8 @@ Currently, cleaning is minimal. As more data becomes available, consider enhanci
 
 - Quality data is not currently processed by this pipeline. 
 - This pipeline was created when there was not a lot of data in DHIS2. We might want to enhance it once we get more data. The main modifications we might want to do are:
-- More thorough cleaning of the quantity data. (once we have had a more thorough look at the data).
-- More indicators being calculated. (once we know more what indicators will be useful for the analysis).
+   - More thorough cleaning of the quantity data. (once we have had a more thorough look at the data).
+   - More indicators being calculated. (once we know more what indicators will be useful for the analysis).
 - The pipeline produces a log file, which tells important information about the process. 
 
 ---
