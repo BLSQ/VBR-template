@@ -6,19 +6,12 @@ from openhexa.sdk import (
     workspace,
     parameter,
 )
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
-import warnings
 import os
 from os import listdir, environ
 from copy import deepcopy
-from os.path import isfile, join
 from sqlalchemy import create_engine
 import regex as re
-import json
 from pathlib import Path
-from typing import Any, Dict
 import polars as pl
 
 import config
@@ -26,7 +19,7 @@ import config
 
 @pipeline("compile_results")
 @parameter(
-    "extraction_folder",
+    "extract_folder",
     name="Name of the folder containing the data to compile",
     default="to_compile",
     type=str,
@@ -65,7 +58,7 @@ import config
     required=False,
 )
 def compile_results(
-    extraction_folder: str,
+    extract_folder: str,
     quantity_db: str,
     reduced_verification_db: str,
     detailed_verification_db: str,
@@ -74,15 +67,13 @@ def compile_results(
     """
     Compile the results from all of the simulations in a single file and database.
     """
-    data_path, output_path, quant_path = define_paths(
-        extraction_folder,
+    data_path, output_path, quant_path = paths(
+        extract_folder,
     )
 
-    create_simulation_statistics_file(data_path, output_path, simulation_statistics_db)
-    create_verification_file(
-        data_path, output_path, reduced_verification_db, detailed_verification_db
-    )
-    create_quantity_file(quant_path, output_path, quantity_db)
+    simulation_stats(data_path, output_path, simulation_statistics_db)
+    verification(data_path, output_path, reduced_verification_db, detailed_verification_db)
+    quantity(quant_path, output_path, quantity_db)
 
 
 def read_csv(path: str) -> pl.DataFrame:
@@ -122,7 +113,7 @@ def read_csv(path: str) -> pl.DataFrame:
         raise OSError(f"Error accessing CSV file '{path}': {e}") from e
 
 
-def create_verification_file(
+def verification(
     data_path: str,
     output_path: str,
     verification_db: str,
@@ -194,9 +185,7 @@ def create_verification_file(
         current_run.log_info(f"Saved the {verification_db} in the database.")
 
 
-def create_simulation_statistics_file(
-    data_path: str, output_path: str, simulation_statistics_db: str
-):
+def simulation_stats(data_path: str, output_path: str, simulation_statistics_db: str):
     """
     Creat the simulation statistics file and, if needed, the DB.
 
@@ -238,7 +227,7 @@ def create_simulation_statistics_file(
         current_run.log_info(f"Saved the {simulation_statistics_db} in the database.")
 
 
-def create_quantity_file(quant_path: str, output_path: str, db_name: str):
+def quantity(quant_path: str, output_path: str, db_name: str):
     """
     Compile the quantity file and, if needed, the DB.
 
@@ -277,7 +266,7 @@ def create_quantity_file(quant_path: str, output_path: str, db_name: str):
         current_run.log_info(f"Saved the {db_name} in the database.")
 
 
-def define_paths(extraction_folder: str):
+def paths(extraction_folder: str):
     """
     Define the paths where we will extract the data from / save it in.
 
