@@ -81,8 +81,6 @@ def eligible_for_vbr(center: Orgunit, vbr_object: VBR) -> bool:
     """
     if not_enough_visits_in_interval(center, vbr_object):
         return False
-    elif center.risk == "uneligible":
-        return False
     elif center.quantite_window[~pd.isnull(center.quantite_window.val)].shape[0] == 0:
         raise ValueError("You should not be here")
     else:
