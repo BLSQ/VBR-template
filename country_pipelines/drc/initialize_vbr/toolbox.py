@@ -133,11 +133,11 @@ def get_date_series(start, end, type):
         A list of consecutive months or quarters between the start and end dates.
     """
     if type == "trimestre":
-        q1 = Quarter(start)
-        q2 = Quarter(end)
+        q1 = Quarter.from_string(start)
+        q2 = Quarter.from_string(end)
         range = q1.get_range(q2)
     else:
-        m1 = Month(start)
-        m2 = Month(end)
+        m1 = Month.from_string(start)
+        m2 = Month.from_string(end)
         range = m1.get_range(m2)
     return range
