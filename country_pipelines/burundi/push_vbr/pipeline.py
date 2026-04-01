@@ -18,7 +18,7 @@ from datetime import datetime
 import config
 
 
-@pipeline("push-vbr", name="push_vbr", timeout=20000)
+@pipeline("push-vbr", timeout=20000)
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
@@ -31,7 +31,6 @@ import config
     name="File with the information to push",
     type=File,
     required=True,
-    multiple=True,
 )
 @parameter(
     "dry_run_taux",

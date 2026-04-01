@@ -1,10 +1,17 @@
 {
-    "packages": {
+    "packages_old": {
         "1040": "quantite",
         "1022": "qualite",
         "1111": "quantite",
         "1017": "qualite",
         "1028": "qualite"
+    },
+    "packages": {
+        "33": "quantite",
+        "32": "qualite",
+        "26": "quantite",
+        "27": "qualite",
+        "41": "qualite"
     },
     "main_contract_id": "QeBTuRlARqc",
     "quantite_attributes": {
