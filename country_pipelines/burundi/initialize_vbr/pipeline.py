@@ -42,14 +42,14 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="End month of the extraction (YYYYMM)",
     required=True,
-    default="202606",
+    default="202410",
 )
 @parameter(
     "window",
     type=int,
     help="Number of months to extract",
     required=True,
-    default=42,
+    default=2,
 )
 @parameter(
     "model_name",
@@ -70,7 +70,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=bool,
     default=True,
 )
-@parameter("extract", name="Extract all of the data", type=bool, default=True)
+@parameter("extract", name="Extract all of the data", type=bool, default=False)
 def buu_init_vbr(
     dhis_con,
     hesabu_con,
@@ -250,7 +250,8 @@ def prepare_quantity_data(
     data: pd.DataFrame
         A DataFrame containing the quantity data.
     """
-    if extract:
+    path_data = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
+    if extract or not os.path.exists(path_data):
         data = pd.DataFrame()
         for id in packages:
             if hesabu_params["packages"][str(id)] == "quantite" and os.path.exists(
@@ -318,9 +319,7 @@ def prepare_quantity_data(
             index=False,
         )
     else:
-        data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
-        )
+        data = pd.read_csv(path_data)
     return data
 
 
@@ -351,7 +350,8 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
     data: pd.DataFrame
         A DataFrame containing the quality data.
     """
-    if extract:
+    path_data = f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
+    if extract or not os.path.exists(path_data):
         data = pd.DataFrame()
         for id in packages:
             if hesabu_params["packages"][str(id)] == "qualite" and os.path.exists(
@@ -381,9 +381,7 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
             index=False,
         )
     else:
-        data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
-        )
+        data = pd.read_csv(path_data)
     return data
 
 
