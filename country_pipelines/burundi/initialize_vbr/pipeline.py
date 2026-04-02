@@ -15,6 +15,7 @@ from RBV_package import data_extraction, dates
 from RBV_package import rbv_environment as rbv
 
 import config
+import toolbox
 
 warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
@@ -41,14 +42,14 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="End month of the extraction (YYYYMM)",
     required=True,
-    default="202501",
+    default="202410",
 )
 @parameter(
     "window",
     type=int,
     help="Number of months to extract",
     required=True,
-    default=12,
+    default=2,
 )
 @parameter(
     "model_name",
@@ -69,7 +70,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=bool,
     default=True,
 )
-@parameter("extract", name="Extract all of the data", type=bool, default=True)
+@parameter("extract", name="Extract all of the data", type=bool, default=False)
 def buu_init_vbr(
     dhis_con,
     hesabu_con,
@@ -106,7 +107,6 @@ def buu_init_vbr(
     save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
 
 
-@buu_init_vbr.task
 def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.DataFrame:
     """
     Get the verification information from DHIS2 for the relevant org units and the relevant periods
@@ -164,7 +164,6 @@ def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.Dat
     return verification
 
 
-@buu_init_vbr.task
 def get_hesabu_token(dhis: DHIS2) -> str:
     """
     Retrieve the hesabu token from the DHIS2 instance
@@ -183,7 +182,6 @@ def get_hesabu_token(dhis: DHIS2) -> str:
         raise ValueError(f"Error retrieving hesabu token from the DHIS2 instance: {e}")
 
 
-@buu_init_vbr.task
 def adapt_hesabu_packages(packages):
     """
     We add the new declared values per payment mode to the hesabu packages.
@@ -218,7 +216,6 @@ def adapt_hesabu_packages(packages):
     return packages
 
 
-@buu_init_vbr.task
 def prepare_quantity_data(
     done, periods, packages, contracts, hesabu_params, extract, model_name, verification
 ):
@@ -253,7 +250,8 @@ def prepare_quantity_data(
     data: pd.DataFrame
         A DataFrame containing the quantity data.
     """
-    if extract:
+    path_data = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
+    if extract or not os.path.exists(path_data):
         data = pd.DataFrame()
         for id in packages:
             if hesabu_params["packages"][str(id)] == "quantite" and os.path.exists(
@@ -321,13 +319,10 @@ def prepare_quantity_data(
             index=False,
         )
     else:
-        data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/quantity_data_{model_name}.csv"
-        )
+        data = pd.read_csv(path_data)
     return data
 
 
-@buu_init_vbr.task
 def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name):
     """Create a CSV file with the quality data.
     (1) We combine all of the data from the packages cvs's that have quality data.
@@ -355,7 +350,8 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
     data: pd.DataFrame
         A DataFrame containing the quality data.
     """
-    if extract:
+    path_data = f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
+    if extract or not os.path.exists(path_data):
         data = pd.DataFrame()
         for id in packages:
             if hesabu_params["packages"][str(id)] == "qualite" and os.path.exists(
@@ -385,13 +381,10 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
             index=False,
         )
     else:
-        data = pd.read_csv(
-            f"{workspace.files_path}/pipelines/initialize_vbr/data/quality_data/quality_data_{model_name}.csv"
-        )
+        data = pd.read_csv(path_data)
     return data
 
 
-@buu_init_vbr.task
 def save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces):
     """We save the simulation in a pickle file. We will then access this pickle file in the second pipeline.
 
@@ -486,7 +479,6 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
     return regions
 
 
-@buu_init_vbr.task
 def clean_quant_data(quant, clean_data, model_name):
     """
     Clean the quantity data. Only if the bool_clean_data is set to True.
@@ -635,7 +627,6 @@ def remove_negative_values(quant, outliers):
     return quant, outliers
 
 
-@buu_init_vbr.task
 def get_dhis2(con_oh):
     """Start the connection to the DHIS2 instance.
 
@@ -652,7 +643,6 @@ def get_dhis2(con_oh):
     return DHIS2(con_oh)
 
 
-@buu_init_vbr.task
 def get_hesabu_vbr_setup():
     """Open the JSON file with the Hesabu setup.
 
@@ -666,7 +656,6 @@ def get_hesabu_vbr_setup():
     )
 
 
-@buu_init_vbr.task
 def get_hesabu_package_ids(hesabu_setup):
     """Get the package IDs from the Hesabu setup.
 
@@ -683,7 +672,6 @@ def get_hesabu_package_ids(hesabu_setup):
     return [int(id) for id in hesabu_setup["packages"]]
 
 
-@buu_init_vbr.task
 def get_contract_group_unit_id(hesa_setup):
     """Get the contract ID from the Hesabu setup.
 
@@ -700,7 +688,6 @@ def get_contract_group_unit_id(hesa_setup):
     return hesa_setup["main_contract_id"]
 
 
-@buu_init_vbr.task
 def get_hesabu(con_hesabu):
     """Start the connection to the Hesabu instance.
 
@@ -717,7 +704,6 @@ def get_hesabu(con_hesabu):
     return workspace.get_connection(con_hesabu)
 
 
-@buu_init_vbr.task
 def fetch_hesabu_package(con_hesabu, package_ids, hesabu_token):
     """Using the Hesabu connection, get the codes for the information that we need from each of the packages.
     You have a list of package IDs. They correspond to the different informations that we are going to want to extract from DHIS2.
@@ -782,7 +768,6 @@ def fetch_hesabu_package(con_hesabu, package_ids, hesabu_token):
     return hesabu_packages
 
 
-@buu_init_vbr.task
 def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
     """Create a CSV file for each of the packages and each of the periods.
     Each of the packages contains a kind of information (for example, the xxxx).
@@ -856,7 +841,6 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
     return full_list_ous
 
 
-@buu_init_vbr.task
 def fetch_contracts(dhis, contract_program_id, model_name):
     """Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
 
@@ -922,7 +906,6 @@ def fetch_contracts(dhis, contract_program_id, model_name):
     return records_df
 
 
-@buu_init_vbr.task
 def get_periods(period, window):
     """Get the periods.
 
@@ -941,7 +924,7 @@ def get_periods(period, window):
     frequency = get_period_type(period)
     start, end = get_start_end(period, window, frequency)
     current_run.log_info(f"Periods considered: {start} to {end}")
-    return dates.get_date_series(start, end, frequency)
+    return toolbox.get_date_series(start, end, frequency)
 
 
 def get_period_type(period):

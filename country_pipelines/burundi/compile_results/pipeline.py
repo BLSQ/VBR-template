@@ -11,12 +11,12 @@ import numpy as np
 from tqdm import tqdm
 import warnings
 import os
+import gc
 from os import listdir, environ
 from copy import deepcopy
 from os.path import isfile, join
 from sqlalchemy import create_engine
 import regex as re
-import json
 from pathlib import Path
 
 import config
@@ -79,7 +79,7 @@ def compile_results(
     data_path, output_path, quant_path, parents_path = define_paths(
         extraction_folder,
     )
-    parents = json.load(open(parents_path))
+    parents = load_pyramid(parents_path)
 
     create_simulation_statistics_file(data_path, output_path, simul_stats_db, save_db)
     create_verification_file(
@@ -114,7 +114,10 @@ def create_verification_file(
             current_run.log_warning(f"The file {f} does not correspond to a valid simulation.")
 
     df_detailed = pd.concat(list_detailed_dfs, ignore_index=True)
+    del list_detailed_dfs
     df_list = pd.concat(list_dfs, ignore_index=True)
+    del list_dfs
+    gc.collect()
 
     df_list.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
     df_list = df_list.sort_values(["province", "periode"]).drop("name", axis=1)
@@ -178,6 +181,8 @@ def create_simulation_statistics_file(
             current_run.log_warning(f"The file {f} does not correspond to a valid simulation.")
 
     df_iteration = pd.concat(list_dfs, ignore_index=True)
+    del list_dfs
+    gc.collect()
     df_iteration.rename(columns={"level_2_name": "province", "period": "periode"}, inplace=True)
     df_iteration = df_iteration.sort_values(["province", "periode"]).drop("name", axis=1)
     df_iteration["gain_vbr"] = df_iteration["total cost (syst)"] - df_iteration["total cost (VBR)"]
@@ -192,29 +197,13 @@ def create_simulation_statistics_file(
 
 
 def add_parents(df, parents):
-    filtered_parents = {key: parents[key] for key in df["ou"] if key in parents}
-    # Transform the `parents` dictionary into a DataFrame
-    parents_df = pd.DataFrame.from_dict(filtered_parents, orient="index").reset_index()
-
-    # Rename the index column to match the "ou" column
-    parents_df.rename(
-        columns={
-            "index": "ou",
-            "level_2_id": "level_2_uid",
-            "level_3_id": "level_3_uid",
-            "level_4_id": "level_4_uid",
-            "level_5_id": "level_5_uid",
-        },
-        inplace=True,
+    return df.merge(parents[["id", "name"]], left_on="ou", right_on="id", how="left").drop(
+        columns="id"
     )
-
-    # Join the DataFrame with the parents DataFrame on the "ou" column
-    result_df = df.merge(parents_df[["ou", "name"]], on="ou", how="left")
-    return result_df
 
 
 def create_suivi_des_risques(
-    quant_path: str, output_path: str, save_db: bool, parents: dict, db_name: str
+    quant_path: str, output_path: str, save_db: bool, parents: pd.DataFrame, db_name: str
 ):
     """
     Create the suivi des risques files from the quantqual data paths.
@@ -225,11 +214,13 @@ def create_suivi_des_risques(
     for filename in os.listdir(quant_path):
         match = re.search(regex_quant, filename)
         if match:
-            found_df = pd.read_csv(quant_path + filename)
+            found_df = pd.read_csv(quant_path + filename, low_memory=False)
             found_df["model"] = match.group(1)
             files_quant.append(found_df)
 
     quant = pd.concat(files_quant, ignore_index=True)
+    del files_quant
+    gc.collect()
 
     quant["ratio dec-ver"] = 100 * (quant["dec"] - quant["ver"]) / quant["ver"]
     quant["ratio ver-val"] = 100 * (quant["ver"] - quant["val"]) / quant["ver"]
@@ -237,6 +228,8 @@ def create_suivi_des_risques(
     quant["service non nul"] = quant["dec"].map(lambda x: 1 if x > 0 else 0)
 
     results = add_parents(quant, parents)
+    del quant
+    gc.collect()
 
     current_run.log_info(f"For the {db_name}, the columns are: {results.columns}")
 
@@ -246,6 +239,19 @@ def create_suivi_des_risques(
         current_run.log_info(f"Saved the {db_name} in the database.")
 
     results.to_csv(f"{output_path}/{db_name}.csv", index=False)
+
+
+def load_pyramid(path: str) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Pyramid file not found at {path}. Please run the DHIS2 metadata extract pipeline first."
+        )
+    except pd.errors.EmptyDataError:
+        raise ValueError(f"Pyramid file at {path} is empty.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load pyramid file at {path}: {e}")
 
 
 def define_paths(extraction_folder: str):
@@ -261,7 +267,7 @@ def define_paths(extraction_folder: str):
     output_path = f"{workspace.files_path}/pipelines/run_vbr/{extraction_folder}/compiled_data/"
     Path(output_path).mkdir(parents=True, exist_ok=True)
     quant_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data/"
-    parents_path = f"{workspace.files_path}/pipelines/run_vbr/config/orgunits.json"
+    parents_path = f"{workspace.files_path}/pipelines/run_vbr/config/orgunits.csv"
 
     return data_path, output_path, quant_path, parents_path
 

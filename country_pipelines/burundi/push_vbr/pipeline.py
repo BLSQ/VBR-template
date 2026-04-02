@@ -18,7 +18,7 @@ from datetime import datetime
 import config
 
 
-@pipeline("push-vbr", name="push_vbr", timeout=20000)
+@pipeline("push-vbr", timeout=20000)
 @parameter(
     "dhis_con",
     type=DHIS2Connection,
@@ -31,7 +31,6 @@ import config
     name="File with the information to push",
     type=File,
     required=True,
-    multiple=True,
 )
 @parameter(
     "dry_run_taux",
@@ -89,13 +88,13 @@ def get_period_list(period):
     return list_periods
 
 
-def get_data(list_files: list[File]):
+def get_data(file: File):
     """
     Get the verification data for the specified periods from the workspace.
 
     Parameters
     ----------
-    list_files: list[File]
+    file: File
         The file with the data
 
     Returns
@@ -106,61 +105,39 @@ def get_data(list_files: list[File]):
         The data to push to DHIS2
 
     """
-    set_output_folders = set()
-    list_data = []
-    dict_okey_files = {}
+    file_path = Path(file.path)
+    file_name = file.name
+    current_run.log_info(f"Getting data for file: {file}")
 
-    for file in list_files:
-        file_path = Path(file.path)
-        file_name = file.name
-        current_run.log_info(f"Getting data for file: {file}")
+    target_folder = file_path.parents[2].name
+    pipeline_folder = file_path.parents[3].name
 
-        target_folder = file_path.parents[2].name
-        set_output_folders.add(target_folder)
-
-        pipeline_folder = file_path.parents[3].name
-
-        pattern = r"model___.+-prov___.+-prd___.+-service\.csv$"
-        if not re.match(pattern, file_name):
-            current_run.log_error(
-                f"The file name {file_name} does not match the expected pattern {pattern}"
-                "I will not use it."
-            )
-            continue
-
-        if pipeline_folder != "run_vbr":
-            current_run.log_error(
-                f"The file {file_name} is not in the expected folder 'run_vbr'. It is in {pipeline_folder}. I will not use it."
-            )
-            continue
-
-        df = pd.read_csv(file_path)
-        list_data.append(df)
-        dict_okey_files[file_name] = df
-
-    if len(set_output_folders) != 1:
+    pattern = r"model___.+-prov___.+-prd___.+-service\.csv$"
+    if not re.match(pattern, file_name):
         current_run.log_error(
-            f"The files are in different target folders: {set_output_folders}. I will not be able to construct the output path."
+            f"The file name {file_name} does not match the expected pattern {pattern}"
+            "I will not use it."
         )
-        raise ValueError("Files in different target folders")
+        raise ValueError(f"The file name {file_name} does not match the expected pattern {pattern}")
 
-    if not list_data:
-        current_run.log_error("No valid files to process. Exiting.")
-        raise ValueError("No valid files to process")
+    if pipeline_folder != "run_vbr":
+        current_run.log_error(
+            f"The file {file_name} is not in the expected folder 'run_vbr'. It is in {pipeline_folder}. I will not use it."
+        )
+        raise ValueError(
+            f"The file {file_name} is not in the expected folder 'run_vbr'. It is in {pipeline_folder}"
+        )
 
-    data = pd.concat(list_data, ignore_index=True)
-    target_folder = set_output_folders.pop()
+    df = pd.read_csv(file_path)
+
     output_path = f"{workspace.files_path}/pipelines/push_vbr/data_to_push/{target_folder}"
     os.makedirs(output_path, exist_ok=True)
 
-    for file_name, df in dict_okey_files.items():
-        df.to_csv(f"{output_path}/{file_name}", index=False)
-
+    df.to_csv(f"{output_path}/{file_name}", index=False)
     current_run.log_info(f"Output path: {output_path}")
-
     dt = datetime.now().strftime("%Y_%m_%d_%H%M")
 
-    return output_path, data, dt
+    return output_path, df, dt
 
 
 def get_dhis2(con_oh):

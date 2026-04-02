@@ -1,0 +1,12 @@
+# Core OpenHEXA dependencies
+openhexa-toolbox>=2.7.0
+openhexa-sdk
+
+# Data processing
+polars
+
+# HTTP requests and API interactions
+requests
+
+# Date handling
+python-dateutil
