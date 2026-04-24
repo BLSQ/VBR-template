@@ -403,12 +403,12 @@ class DHIS2PyramidAligner:
                 params={"importStrategy": "DELETE", "async": "true"},
             )
             if r.status_code not in (200, 202):
-                raise OrgUnitDeleteError(
-                    f"Async delete request failed: {r.status_code} {r.text}"
-                )
+                raise OrgUnitDeleteError(f"Async delete request failed: {r.status_code} {r.text}")
 
             response_json = r.json()
-            job_type = response_json.get("response", {}).get("jobType") or response_json.get("jobType")
+            job_type = response_json.get("response", {}).get("jobType") or response_json.get(
+                "jobType"
+            )
             job_id = response_json.get("response", {}).get("id") or response_json.get("id")
             if not job_type or not job_id:
                 raise OrgUnitDeleteError(
@@ -432,7 +432,9 @@ class DHIS2PyramidAligner:
                 if not tasks:
                     continue
                 last = tasks[-1] if isinstance(tasks, list) else tasks
-                self._log_message(f"Job status: {last.get('message', '')} (completed={last.get('completed')})")
+                self._log_message(
+                    f"Job status: {last.get('message', '')} (completed={last.get('completed')})"
+                )
                 if last.get("completed"):
                     break
 

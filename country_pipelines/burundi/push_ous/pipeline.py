@@ -44,7 +44,7 @@ from org_unit_aligner import DHIS2PyramidAligner
     "delete_or_import",
     type=str,
     help="If 'delete', delete existing org units before importing new ones. If 'import', import new org units without deleting.",
-    default="delete",
+    default="import",
     required=True,
     choices=["delete", "import"],
 )
@@ -67,6 +67,7 @@ def push_ous(file_path, dhis_con, dry_run, delete_or_import, async_delete):
     df = read_source_csv(file_path)
     if delete_or_import == "import":
         df_mod = change_names_before_match(df)
+        df_mod = delete_double_gasc(df_mod)
         df_matched, df_unmatched = match_parent_ids(df_mod, target_pyramid)
         uids = generate_uids(dhis, len(df_matched))
         df_matched = create_short_names(df_matched)
@@ -78,9 +79,56 @@ def push_ous(file_path, dhis_con, dry_run, delete_or_import, async_delete):
     elif delete_or_import == "delete":
         ous_to_delete = select_ous_to_delete(target_pyramid)
         ous_to_delete_filtered = filter_ous_to_delete(ous_to_delete, df)
-        delete_ous(dhis, ous_to_delete_filtered, dry_run, async_delete)
+        ous_some = select_first_ous(ous_to_delete_filtered, n=104)
+        delete_ous(dhis, ous_some, dry_run, async_delete)
     else:
         current_run.log_error(f"Invalid value for delete_or_import: {delete_or_import}")
+
+
+def delete_double_gasc(df: pl.DataFrame) -> pl.DataFrame:
+    """We do not import the GASCs that share the same province and fosa as another GASC in the CSV.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        Source CSV data with columns Province, fosa, Gasc.
+
+    Returns
+    -------
+    pl.DataFrame
+        DataFrame with duplicate GASCs removed.
+    """
+    df_unique = df.with_columns(
+        pl.struct(["Province", "fosa"]).alias("province_fosa")
+    ).with_columns(pl.count("province_fosa").over("province_fosa").alias("count"))
+    duplicates = df_unique.filter(pl.col("count") > 1)
+    if len(duplicates) > 0:
+        current_run.log_warning(
+            f"{len(duplicates)} GASCs share the same Province and fosa as another GASC and will be skipped: "
+            + ", ".join(duplicates["Gasc"].to_list())
+        )
+    df_unique = df_unique.filter(pl.col("count") == 1).drop(["province_fosa", "count"])
+    return df_unique
+
+
+def select_first_ous(ous_to_delete: pl.DataFrame, n: int) -> pl.DataFrame:
+    """Select the first n org units to delete, for testing purposes.
+
+    Parameters
+    ----------
+    ous_to_delete : pl.DataFrame
+        DataFrame with columns id, name of org units to delete.
+    n : int
+        Number of org units to select.
+
+    Returns
+    -------
+    pl.DataFrame
+        DataFrame with columns id, name of the first n org units to delete.
+    """
+    selected = ous_to_delete.head(n)
+    current_run.log_info(f"Selected the first {len(selected)} org units to delete for testing.")
+    return selected
 
 
 def filter_ous_to_delete(ous_to_delete: pl.DataFrame, df: pl.DataFrame) -> pl.DataFrame:
