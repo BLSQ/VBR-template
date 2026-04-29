@@ -198,22 +198,47 @@ def adapt_hesabu_packages(packages):
     """
     for package_id in packages:
         for index, activity in enumerate(packages[package_id]["content"]["activities"]):
+            if "declaree" in activity["inputMappings"].keys():
+                packages[package_id]["content"]["activities"][index]["inputMappings"].update(
+                    adapt_to_coc(
+                        packages[package_id]["content"]["activities"][index]["inputMappings"][
+                            "declaree"
+                        ],
+                        config.category_options_per_dec,
+                    )
+                )
+                packages[package_id]["content"]["activities"][index]["inputMappings"].pop(
+                    "declaree"
+                )
             if "declaree_indiv" in activity["inputMappings"].keys():
-                externalReference = packages[package_id]["content"]["activities"][index][
-                    "inputMappings"
-                ]["declaree_indiv"]["externalReference"].split(".")[0]
-                name = packages[package_id]["content"]["activities"][index]["inputMappings"][
+                packages[package_id]["content"]["activities"][index]["inputMappings"].update(
+                    adapt_to_coc(
+                        packages[package_id]["content"]["activities"][index]["inputMappings"][
+                            "declaree_indiv"
+                        ],
+                        config.category_options_per_dec_indiv,
+                    )
+                )
+                packages[package_id]["content"]["activities"][index]["inputMappings"].pop(
                     "declaree_indiv"
-                ]["name"]
-
-                for dec, coc in config.category_options_per_dec.items():
-                    packages[package_id]["content"]["activities"][index]["inputMappings"][dec] = {
-                        "externalReference": externalReference,
-                        "name": name,
-                        "categoryOptionCombo": coc,
-                    }
+                )
 
     return packages
+
+
+def adapt_to_coc(info, mapping):
+    new_dict = {}
+    external_reference = info["externalReference"].split(".")[0]
+    name = info["name"]
+
+    for dec, coc in mapping.items():
+        new_dict[dec] = {
+            "externalReference": external_reference,
+            "name": name,
+            "categoryOptionCombo": coc,
+        }
+
+    return new_dict
 
 
 def prepare_quantity_data(
@@ -275,15 +300,9 @@ def prepare_quantity_data(
         # We want to take both into account
         data = data.merge(contracts, on="org_unit_id")
         data = data.merge(verification, on=["org_unit_id", "period"], how="left")
-        data["provenance_data"] = "declaree"
-        if "declaree_indiv" in data.columns:
-            ser_dec_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
-            ser_dec_indiv_not_nan_0 = data["declaree_indiv"].notna() & (data["declaree_indiv"] != 0)
-            # For these cases we do a replacement
-            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "declaree"] = data["declaree_indiv"]
-            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "validee"] = data["validee_indiv"]
-            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "verifiee"] = data["verifiee_indiv"]
-            data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "provenance_data"] = "declaree_indiv"
+        data = deal_with_declared_partial_values(data)
+        data = deal_with_declared_indiv_values(data)
+        data = data[data["declaree"].notna() & (data["declaree"] != 0)]
 
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
@@ -299,10 +318,9 @@ def prepare_quantity_data(
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
-        data["dec_fbp"] = data["dec"] - data["dec_cam"] - data["dec_mfp"]
         data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
         data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
-        data = data[data["dec"].notna() & (data["dec"] != 0)]
+
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
 
@@ -320,6 +338,65 @@ def prepare_quantity_data(
         )
     else:
         data = pd.read_csv(path_data)
+    return data
+
+
+def deal_with_declared_partial_values(data):
+    """
+    For the cases where declaree is empty, calculate it as declaree_fbp + declaree_cam + declaree_mfp.
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        The DataFrame containing the declared values.
+
+    Returns
+    -------
+    data: pd.DataFrame
+        The DataFrame with the declared values updated.
+    """
+    if "declaree" not in data.columns:
+        data["declaree"] = (
+            data["declaree_fbp"].fillna(0)
+            + data["declaree_cam"].fillna(0)
+            + data["declaree_mfp"].fillna(0)
+        )
+        return data
+
+    ser_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
+    data.loc[ser_nan_0, "declaree"] = (
+        data.loc[ser_nan_0, "declaree_fbp"].fillna(0)
+        + data.loc[ser_nan_0, "declaree_cam"].fillna(0)
+        + data.loc[ser_nan_0, "declaree_mfp"].fillna(0)
+    )
+
+    return data
+
+
+def deal_with_declared_indiv_values(data):
+    """
+    When declaree is them still empty, replace it with the declaree_indiv.
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        The DataFrame containing the declared values.
+
+    Returns
+    -------
+    data: pd.DataFrame
+        The DataFrame with the declared values updated.
+    """
+    data["provenance_data"] = "declaree"
+    if "declaree_indiv" in data.columns:
+        ser_dec_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
+        ser_dec_indiv_not_nan_0 = data["declaree_indiv"].notna() & (data["declaree_indiv"] != 0)
+        # For these cases we do a replacement
+        data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "declaree"] = data["declaree_indiv"]
+        data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "validee"] = data["validee_indiv"]
+        data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "verifiee"] = data["verifiee_indiv"]
+        data.loc[ser_dec_nan_0 & ser_dec_indiv_not_nan_0, "provenance_data"] = "declaree_indiv"
+
     return data
 
 
@@ -500,11 +577,12 @@ def clean_quant_data(quant, clean_data, model_name):
     """
     if clean_data:
         outliers = pd.DataFrame()
+        original_len = len(quant)
         quant, outliers = remove_weirdly_high_validated_values(quant, outliers)
         quant, outliers = remove_null_tarifs(quant, outliers)
         quant, outliers = remove_fbp_not_predominant(quant, outliers)
         quant, outliers = remove_negative_values(quant, outliers)
-        per_outliers = 100 * len(outliers) / len(quant)
+        per_outliers = 100 * len(outliers) / original_len
         current_run.log_info(
             f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
         )

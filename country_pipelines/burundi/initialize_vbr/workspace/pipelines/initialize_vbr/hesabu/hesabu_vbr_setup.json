@@ -23,6 +23,7 @@
         "declaree_cam": "dec_cam",
         "declaree": "dec",
         "declaree_mfp": "dec_mfp",
+        "declaree_fbp": "dec_fbp",
         "tarif": "tarif"
     },
     "qualite_attributes": {
