@@ -1,12 +1,13 @@
 """DHIS2 to DHIS2 Data Elements Pipeline.
 
 This pipeline extracts data values from a source DHIS2 instance for a given dataset
-and writes the values to a target DHIS2 instance, using mappings for dataElement,
-categoryOptionCombos, and attributeOptionCombos IDs.
+and writes the values to a target DHIS2 instance, using mappings for dataElement and
+categoryOptionCombos IDs.
 """
 
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import polars as pl
 from openhexa.sdk import (
@@ -16,22 +17,21 @@ from openhexa.sdk import (
     pipeline,
     workspace,
 )
-from openhexa.sdk.pipelines.parameter import DHIS2Widget
 from openhexa.toolbox.dhis2.dataframe import get_data_elements, get_category_option_combos
 
 import config
 from api import (
-    get_dataset_org_units,
     get_datasets_as_dict,
     extract_source_data,
     get_dhis2_client,
     post_to_target,
     validate_connection,
     check_datasets_associated,
+    get_coc_per_des,
 )
-from utils import read_json_file, save_outputs
+from utils import read_csv, save_outputs
 from dates import get_start_end_date, get_periods_from_start_end_dates
-from mappings import prepare_data_value_payload
+from mappings import prepare_data_value_payload, validate_data_values
 
 
 @pipeline("dhis2_to_dhis2_data_elements")
@@ -50,22 +50,12 @@ from mappings import prepare_data_value_payload
     default="pbf-burundi",
 )
 @parameter(
-    "dataset_id",
-    type=str,
-    widget=DHIS2Widget.DATASETS,
-    connection="source_connection",
-    help="In the source connection",
-    name="Dataset ID",
-    required=True,
-    default="KxHklDfg96M",
-)
-@parameter(
     "mapping_file",
     type=str,
-    help="Example: mapping_bdi_snis_pbf_HC.json",
-    name="Mapping JSON filename",
+    help="Example: Mapping SNIS-FBP - Mapping_formats.csv",
+    name="Mapping CSV filename",
     required=True,
-    default="mapping_bdi_snis_pbf_HC.json",
+    default="Mapping SNIS-FBP - Mapping_formats.csv",
 )
 @parameter(
     "start_date",
@@ -107,7 +97,6 @@ from mappings import prepare_data_value_payload
 def dhis2_to_dhis2_data_elements(
     source_connection: DHIS2Connection,
     target_connection: DHIS2Connection,
-    dataset_id: str,
     mapping_file: str,
     start_date: str,
     end_date: str,
@@ -116,6 +105,7 @@ def dhis2_to_dhis2_data_elements(
     days_back: int = 365,
 ):
     """Extract data values from source DHIS2 and write to target DHIS2 with mappings."""
+    output_dir = initialize_output_dir()
     current_run.log_info("Validating DHIS2 connections...")
     source_dhis2 = get_dhis2_client(source_connection, config.use_cache)
     target_dhis2 = get_dhis2_client(target_connection, config.use_cache)
@@ -127,21 +117,15 @@ def dhis2_to_dhis2_data_elements(
     des_target = get_data_elements(target_dhis2)
     cocs_source = get_category_option_combos(source_dhis2)
     cocs_target = get_category_option_combos(target_dhis2)
-    dataset_org_units_source = get_dataset_org_units(source_dhis2, dataset_id)
     datasets_source = get_datasets_as_dict(source_dhis2)
+    des_coc_target = get_coc_per_des(target_dhis2)
 
     current_run.log_info("Validating and loading mapping file...")
-    mapping_data = read_json_file(Path(workspace.files_path) / config.pipeline_input / mapping_file)
+    mapping_data = read_csv(Path(workspace.files_path) / config.pipeline_input / mapping_file)
     validate_mapping_structure(mapping_data)
-    for df, key, side in [
-        (des_source, "dataElements", "keys"),
-        (des_target, "dataElements", "values"),
-        (cocs_source, "categoryOptionCombos", "keys"),
-        (cocs_target, "categoryOptionCombos", "values"),
-        (cocs_source, "attributeOptionCombos", "keys"),
-        (cocs_target, "attributeOptionCombos", "values"),
-    ]:
-        validate_ids(df, mapping_data, key, side)  # type: ignore[arg-type]
+    validate_mapping_ids(
+        mapping_data, des_source, des_target, cocs_source, cocs_target, datasets_source
+    )
 
     current_run.log_info("Dealing with the extraction periods...")
     start_date, end_date = get_start_end_date(
@@ -150,185 +134,353 @@ def dhis2_to_dhis2_data_elements(
         start_date=start_date,
         end_date=end_date,
     )
-    period_type = datasets_source[dataset_id]["periodType"]
-    current_run.log_info(f"Dataset period type: {period_type}")
-    periods_extraction = get_periods_from_start_end_dates(start_date, end_date, period_type)
 
-    source_data = extract_source_data(
-        source_dhis2,
-        dataset_id,
-        periods_extraction,
-        dataset_org_units_source,
+    dataset_ids = mapping_data["ds_id_snis"].drop_nulls().unique().to_list()
+    source_data = extract_all_dataset_data(
+        source_dhis2, dataset_ids, datasets_source, start_date, end_date, output_dir
     )
 
-    transformed_data, transform_stats = transform_data_values(source_data, mapping_data)
+    if len(source_data) == 0:
+        current_run.log_warning("No data extracted from source DHIS2; stopping pipeline.")
+        summary = generate_summary(
+            source_count=0,
+            filtered_count=0,
+            transformed_count=0,
+            coc_filtered_count=0,
+            validation_dropped=0,
+            post_results={"status": "no_data", "imported": 0, "updated": 0, "ignored": 0},
+            dry_run=dry_run,
+        )
+        save_outputs(output_dir, pl.DataFrame(), pl.DataFrame(), [], {"status": "no_data"}, summary)
+        return
 
-    if len(transformed_data) == 0:
+    filtered_data = select_relevant_values(source_data, mapping_data)
+    transformed_data = transform_data_values(filtered_data, mapping_data)
+    transformed_count = len(transformed_data)
+
+    validation_dropped = 0
+    coc_filtered_count = 0
+    if transformed_count == 0:
         current_run.log_warning("No data to post after transformation")
         post_results = {"status": "no_data", "imported": 0, "updated": 0, "ignored": 0}
         payload = []
     else:
         current_run.log_info(f"Posting data to target DHIS2 (dry_run={dry_run})...")
-        payload = prepare_data_value_payload(transformed_data, target_dhis2)
+        transformed_data = add_attribute_option_combo_id(transformed_data)
+        transformed_data = filter_valid_cocs(transformed_data, des_coc_target)
+        coc_filtered_count = len(transformed_data)
+        transformed_data = validate_data_values(transformed_data, target_dhis2, des_target)
+        validation_dropped = coc_filtered_count - len(transformed_data)
+        payload = prepare_data_value_payload(transformed_data)
         current_run.log_info(f"Prepared {len(payload)} data values for posting")
         check_datasets_associated(target_dhis2, payload)
         post_results = post_to_target(target_dhis2, payload, dry_run)
 
-    summary = generate_summary(transform_stats, post_results, dry_run)
-    save_outputs(
-        dataset_id,
-        des_source,
-        des_target,
-        cocs_source,
-        cocs_target,
-        dataset_org_units_source,
-        datasets_source,
-        source_data,
-        payload,
-        post_results,
-        summary,
+    summary = generate_summary(
+        source_count=len(source_data),
+        filtered_count=len(filtered_data),
+        transformed_count=transformed_count,
+        coc_filtered_count=coc_filtered_count,
+        validation_dropped=validation_dropped,
+        post_results=post_results,
+        dry_run=dry_run,
     )
+    save_outputs(output_dir, filtered_data, transformed_data, payload, post_results, summary)
 
 
-def validate_mapping_structure(mapping_data: dict[str, Any]) -> None:
-    """Validate mapping file structure. Raises ValueError if invalid."""
-    required_keys = {"dataElements", "categoryOptionCombos", "attributeOptionCombos"}
-    present_keys = set(mapping_data.keys())
-    missing_keys = required_keys - present_keys
-    extra_keys = present_keys - required_keys
-
-    if missing_keys:
-        raise ValueError(f"Missing required keys in mapping file: {missing_keys}")
-    if extra_keys:
-        current_run.log_warning(f"Extra keys in mapping file that will be ignored: {extra_keys}")
-
-    for key in required_keys:
-        if not isinstance(mapping_data[key], dict):
-            raise ValueError(f"Key '{key}' must be a dictionary")
+def add_attribute_option_combo_id(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(pl.lit(config.att_default).alias("attribute_option_combo_id"))
 
 
-def apply_data_mappings(
-    data_values: pl.DataFrame, mapping: dict[str, dict[str, str]]
-) -> tuple[pl.DataFrame, dict[str, Any]]:
-    """Transform data values using mappings.
+def filter_valid_cocs(data: pl.DataFrame, des_coc_target: dict[str, set]) -> pl.DataFrame:
+    """Filter out rows whose category option combo is not valid for the data element.
 
-    Returns:
-        tuple[pl.DataFrame, dict[str, Any]]: Transformed data and statistics.
+    Uses the pre-fetched des_coc_target mapping (DE ID → set of valid COC IDs) so no
+    additional API calls are needed.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Transformed data values with columns data_element_id and category_option_combo_id.
+    des_coc_target : dict[str, set]
+        Mapping of target data element ID to its set of valid category option combo IDs.
+
+    Returns
+    -------
+    pl.DataFrame
+        Filtered data containing only rows with valid DE/COC combinations.
     """
-    original_count = len(data_values)
-    stats = {
-        "original_count": original_count,
-        "mapped_data_elements": 0,
-        "mapped_category_option_combos": 0,
-        "unmapped_data_elements": 0,
-        "unmapped_category_option_combos": 0,
-        "mapped_attribute_option_combos": 0,
-        "unmapped_attribute_option_combos": 0,
-        "final_count": 0,
-    }
-
-    de_mapping = mapping.get("dataElements", {})
-    if de_mapping:
-        count_before = len(data_values)
-        data_values = data_values.filter(pl.col("data_element_id").is_in(list(de_mapping.keys())))
-        stats["mapped_data_elements"] = len(data_values)
-        stats["unmapped_data_elements"] = count_before - len(data_values)
-        data_values = data_values.with_columns(
-            pl.col("data_element_id").map_elements(
-                lambda x: de_mapping.get(x, x), return_dtype=pl.Utf8
-            )
-        )
-
-    coc_mapping = mapping.get("categoryOptionCombos", {})
-    if coc_mapping and "category_option_combo_id" in data_values.columns:
-        count_before = len(data_values)
-        data_values = data_values.filter(
-            pl.col("category_option_combo_id").is_in(list(coc_mapping.keys()))
-        )
-        stats["mapped_category_option_combos"] = len(data_values)
-        stats["unmapped_category_option_combos"] = count_before - len(data_values)
-        data_values = data_values.with_columns(
-            pl.col("category_option_combo_id").map_elements(
-                lambda x: coc_mapping.get(x, x), return_dtype=pl.Utf8
-            )
-        )
-
-    aoc_mapping = mapping.get("attributeOptionCombos", {})
-    if aoc_mapping and "attribute_option_combo_id" in data_values.columns:
-        count_before = len(data_values)
-        data_values = data_values.filter(
-            pl.col("attribute_option_combo_id").is_in(list(aoc_mapping.keys()))
-        )
-        stats["mapped_attribute_option_combos"] = len(data_values)
-        stats["unmapped_attribute_option_combos"] = count_before - len(data_values)
-        data_values = data_values.with_columns(
-            pl.col("attribute_option_combo_id").map_elements(
-                lambda x: aoc_mapping.get(x, x), return_dtype=pl.Utf8
-            )
-        )
-
-    stats["final_count"] = len(data_values)
-    return data_values, stats
+    valid_pairs = pl.DataFrame(
+        [
+            {"data_element_id": de, "category_option_combo_id": coc}
+            for de, cocs in des_coc_target.items()
+            for coc in cocs
+        ]
+    )
+    initial_count = len(data)
+    filtered = data.join(
+        valid_pairs, on=["data_element_id", "category_option_combo_id"], how="inner"
+    )
+    current_run.log_info(
+        f"COC validation: {initial_count} → {len(filtered)} records kept "
+        f"({initial_count - len(filtered)} removed: CoC not valid for its DE)"
+    )
+    return filtered
 
 
-def validate_ids(
-    source_data: pl.DataFrame,
-    mapping_data_all: dict[str, dict[str, str]],
-    key: Literal["dataElements", "categoryOptionCombos", "attributeOptionCombos"],
-    keys_or_values: Literal["keys", "values"],
-):
-    """Validate that IDs in mapping file exist in source DHIS2 data. Raises ValueError if any IDs are missing."""
-    if keys_or_values == "keys":
-        mapping_ids = set(mapping_data_all.get(key, {}).keys())
-        dhis2_type = "source"
-    else:
-        mapping_ids = set(mapping_data_all.get(key, {}).values())
-        dhis2_type = "target"
+def validate_mapping_structure(mapping_data: pl.DataFrame) -> None:
+    """Validate mapping CSV columns are present and fully populated. Raises ValueError if invalid."""
+    missing_cols = [col for col in config.REQUIRED_ID_COLUMNS if col not in mapping_data.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns in mapping file: {missing_cols}")
 
-    source_ids = set(source_data.select("id").to_series().to_list())
-    missing_source = mapping_ids - source_ids
-    if missing_source:
-        msg = f"{key} IDs in mapping file not found in DHIS2 {dhis2_type}: {missing_source}"
+    for col in config.REQUIRED_ID_COLUMNS:
+        empty_count = mapping_data.select(
+            (
+                pl.col(col).is_null()
+                | (pl.col(col).cast(pl.String).str.strip_chars().len_chars() == 0)
+            ).sum()
+        ).item()
+        if empty_count > 0:
+            raise ValueError(f"Column '{col}' has {empty_count} empty or null values")
+
+
+def _check_ids(
+    mapping_data: pl.DataFrame, id_cols: list[str], dhis2_df: pl.DataFrame, label: str
+) -> None:
+    """Collect unique IDs from id_cols and raise if any are missing from dhis2_df."""
+    ids: set[str] = set()
+    for col in id_cols:
+        ids.update(mapping_data[col].unique().drop_nulls().to_list())
+    dhis2_ids = set(dhis2_df["id"].to_list())
+    missing = ids - dhis2_ids
+    if missing:
+        msg = f"{label} IDs in mapping not found in DHIS2: {missing}"
         current_run.log_error(msg)
         raise ValueError(msg)
 
 
-def transform_data_values(
-    data_values: pl.DataFrame,
-    mapping_data: dict[str, dict[str, str]],
-) -> tuple[pl.DataFrame, dict[str, Any]]:
-    """Transform data values using mappings.
+def validate_mapping_ids(
+    mapping_data: pl.DataFrame,
+    des_source: pl.DataFrame,
+    des_target: pl.DataFrame,
+    cocs_source: pl.DataFrame,
+    cocs_target: pl.DataFrame,
+    datasets_source: dict,
+) -> None:
+    """Validate all ID columns in the mapping against source and target DHIS2 metadata."""
+    dataset_ids = set(mapping_data["ds_id_snis"].drop_nulls().unique().to_list())
+    missing_datasets = dataset_ids - set(datasets_source.keys())
+    if missing_datasets:
+        msg = f"Dataset IDs in mapping not found in source DHIS2: {missing_datasets}"
+        current_run.log_error(msg)
+        raise ValueError(msg)
 
-    Returns:
-        tuple[pl.DataFrame, dict[str, Any]]: Transformed data and statistics.
+    _check_ids(mapping_data, ["de_id_snis"], des_source, "source dataElements")
+    _check_ids(
+        mapping_data,
+        ["coc_id_snis_mfp", "coc_id_snis_cam", "coc_id_snis_fbp"],
+        cocs_source,
+        "source categoryOptionCombos",
+    )
+    _check_ids(
+        mapping_data,
+        ["de_id_fbp_dec"],
+        des_target,
+        "target dataElements",
+    )
+    _check_ids(
+        mapping_data,
+        [
+            "coc_id_fbp_mfp",
+            "coc_id_fbp_cam",
+            "coc_id_fbp_total",
+        ],
+        cocs_target,
+        "target categoryOptionCombos",
+    )
+
+
+def initialize_output_dir() -> Path:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_dir = Path(workspace.files_path) / "pipelines" / "transfer_snis_fbp" / timestamp
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def extract_dataset_data(
+    source_dhis2: Any,
+    dataset_id: str,
+    datasets_source: dict,
+    start_date: str,
+    end_date: str,
+    output_dir: Path,
+) -> pl.DataFrame:
+    period_type = datasets_source[dataset_id]["periodType"]
+    current_run.log_info(f"Dataset {dataset_id}: period type {period_type}")
+    periods = get_periods_from_start_end_dates(start_date, end_date, period_type)
+    org_units = datasets_source[dataset_id]["organisation_units"]
+
+    data = extract_source_data(source_dhis2, dataset_id, periods, org_units)
+
+    if len(data) == 0:
+        current_run.log_warning(f"No data extracted for dataset {dataset_id}")
+    else:
+        out_path = output_dir / f"{dataset_id}.parquet"
+        data.write_parquet(out_path)
+        current_run.add_file_output(out_path.as_posix())
+
+    return data
+
+
+def extract_all_dataset_data(
+    source_dhis2: Any,
+    dataset_ids: list[str],
+    datasets_source: dict,
+    start_date: str,
+    end_date: str,
+    output_dir: Path,
+) -> pl.DataFrame:
+    current_run.log_info(f"Extracting data for {len(dataset_ids)} datasets...")
+    extracted = [
+        extract_dataset_data(source_dhis2, ds_id, datasets_source, start_date, end_date, output_dir)
+        for ds_id in dataset_ids
+    ]
+    non_empty = [df for df in extracted if len(df) > 0]
+    if not non_empty:
+        current_run.log_warning("No data extracted for any dataset")
+    return pl.concat(non_empty) if non_empty else pl.DataFrame()
+
+
+def select_relevant_values(source_data: pl.DataFrame, mapping_data: pl.DataFrame) -> pl.DataFrame:
+    """Filter source data to only DE+COC pairs present in the mapping.
+
+    Returns
+    --------
+    pl.DataFrame
+        Filtered data containing only rows with dataElement and categoryOptionCombo combinations
+        that are defined in the mapping file.
     """
-    current_run.log_info("Transforming data values...")
+    valid_pairs = pl.concat(
+        [
+            mapping_data.select(
+                pl.col("de_id_snis").alias("data_element_id"),
+                pl.col("coc_id_snis_mfp").alias("category_option_combo_id"),
+            ),
+            mapping_data.select(
+                pl.col("de_id_snis").alias("data_element_id"),
+                pl.col("coc_id_snis_cam").alias("category_option_combo_id"),
+            ),
+            mapping_data.select(
+                pl.col("de_id_snis").alias("data_element_id"),
+                pl.col("coc_id_snis_fbp").alias("category_option_combo_id"),
+            ),
+        ]
+    ).unique()
 
-    transformed_data, stats = apply_data_mappings(data_values, mapping_data)
-    current_run.log_info("✓ Transformation completed")
-    current_run.log_info(f"  - Original records: {stats['original_count']}")
-    current_run.log_info(
-        f"  - Final records (after unmapped elements filtered): {stats['final_count']}"
+    initial_count = len(source_data)
+    filtered = source_data.join(
+        valid_pairs, on=["data_element_id", "category_option_combo_id"], how="inner"
     )
-    current_run.log_info(f"  - Mapped data elements: {stats['mapped_data_elements']}")
-    current_run.log_info(f"  - Unmapped data elements: {stats['unmapped_data_elements']}")
-    current_run.log_info(
-        f"  - Mapped category option combos: {stats['mapped_category_option_combos']}"
+    current_run.log_info(f"Relevant values: {initial_count} → {len(filtered)} records")
+    return filtered
+
+
+def aggregate_cocs(filtered_data: pl.DataFrame) -> pl.DataFrame:
+    cast_data = filtered_data.with_columns(pl.col("value").cast(pl.Float64, strict=False))
+    non_numeric = cast_data.filter(pl.col("value").is_null()).height
+    if non_numeric > 0:
+        current_run.log_warning(
+            f"Dropped {non_numeric} rows with non-numeric values during aggregation"
+        )
+    return (
+        cast_data.drop_nulls("value")
+        .group_by(["organisation_unit_id", "period", "data_element_id"])
+        .agg(pl.col("value").sum().alias("de_total_snis"))
     )
-    current_run.log_info(
-        f"  - Unmapped category option combos: {stats['unmapped_category_option_combos']}"
+
+
+def transform_data_values(filtered_data: pl.DataFrame, mapping_data: pl.DataFrame) -> pl.DataFrame:
+    current_run.log_info("Transforming data values...")
+    totals = aggregate_cocs(filtered_data)
+
+    dec_mapping = mapping_data.select(["de_id_snis", "de_id_fbp_dec", "coc_id_fbp_dec"]).unique()
+    if dec_mapping["de_id_snis"].is_duplicated().any():
+        raise ValueError(
+            "Mapping has multiple FBP DEC target rows per SNIS DE — this would cause double-posting. "
+            "Each SNIS DE must map to exactly one FBP DEC DE+COC pair."
+        )
+
+    dec_rows = totals.join(
+        dec_mapping,
+        left_on="data_element_id",
+        right_on="de_id_snis",
+    ).select(
+        [
+            pl.col("de_id_fbp_dec").alias("data_element_id"),
+            pl.col("coc_id_fbp_dec").alias("category_option_combo_id"),
+            "organisation_unit_id",
+            "period",
+            pl.col("de_total_snis").alias("value"),
+        ]
     )
-    current_run.log_info(
-        f"  - Mapped attribute option combos: {stats['mapped_attribute_option_combos']}"
+
+    mfp_rows = (
+        filtered_data.with_columns(pl.col("value").cast(pl.Float64, strict=False))
+        .drop_nulls("value")
+        .join(
+            mapping_data.select(
+                ["de_id_snis", "coc_id_snis_mfp", "de_id_fbp_dec_mfp", "coc_id_fbp_dec_mfp"]
+            ).unique(),
+            left_on=["data_element_id", "category_option_combo_id"],
+            right_on=["de_id_snis", "coc_id_snis_mfp"],
+        )
+        .select(
+            [
+                pl.col("de_id_fbp_dec_mfp").alias("data_element_id"),
+                pl.col("coc_id_fbp_dec_mfp").alias("category_option_combo_id"),
+                "organisation_unit_id",
+                "period",
+                "value",
+            ]
+        )
     )
-    current_run.log_info(
-        f"  - Unmapped attribute option combos: {stats['unmapped_attribute_option_combos']}"
+
+    cam_rows = (
+        filtered_data.with_columns(pl.col("value").cast(pl.Float64, strict=False))
+        .drop_nulls("value")
+        .join(
+            mapping_data.select(
+                ["de_id_snis", "coc_id_snis_cam", "de_id_fbp_dec_cam", "coc_id_fbp_dec_cam"]
+            ).unique(),
+            left_on=["data_element_id", "category_option_combo_id"],
+            right_on=["de_id_snis", "coc_id_snis_cam"],
+        )
+        .select(
+            [
+                pl.col("de_id_fbp_dec_cam").alias("data_element_id"),
+                pl.col("coc_id_fbp_dec_cam").alias("category_option_combo_id"),
+                "organisation_unit_id",
+                "period",
+                "value",
+            ]
+        )
     )
-    return transformed_data, stats
+
+    result = pl.concat([dec_rows, mfp_rows, cam_rows])
+    current_run.log_info(f"Transformation complete: {len(result)} target records")
+    current_run.log_info(f"- {len(dec_rows)} from DEC mapping")
+    current_run.log_info(f"- {len(mfp_rows)} from MFP mapping")
+    current_run.log_info(f"- {len(cam_rows)} from CAM mapping")
+    return result
 
 
 def generate_summary(
-    transform_stats: dict[str, Any],
+    source_count: int,
+    filtered_count: int,
+    transformed_count: int,
+    coc_filtered_count: int,
+    validation_dropped: int,
     post_results: dict[str, Any],
     dry_run: bool,
 ) -> dict[str, Any]:
@@ -337,24 +489,11 @@ def generate_summary(
         "pipeline": "dhis2_to_dhis2_data_elements",
         "dry_run": dry_run,
         "extraction": {
-            "original_records": transform_stats.get("original_count", 0),
-            "final_records": transform_stats.get("final_count", 0),
-        },
-        "transformation": {
-            "mapped_data_elements": transform_stats.get("mapped_data_elements", 0),
-            "unmapped_data_elements": transform_stats.get("unmapped_data_elements", 0),
-            "mapped_category_option_combos": transform_stats.get(
-                "mapped_category_option_combos", 0
-            ),
-            "unmapped_category_option_combos": transform_stats.get(
-                "unmapped_category_option_combos", 0
-            ),
-            "mapped_attribute_option_combos": transform_stats.get(
-                "mapped_attribute_option_combos", 0
-            ),
-            "unmapped_attribute_option_combos": transform_stats.get(
-                "unmapped_attribute_option_combos", 0
-            ),
+            "source_records": source_count,
+            "relevant_records": filtered_count,
+            "transformed_records": transformed_count,
+            "coc_filtered_records": coc_filtered_count,
+            "validation_dropped": validation_dropped,
         },
         "import": {
             "imported": post_results.get("imported", 0),
@@ -366,8 +505,11 @@ def generate_summary(
 
     current_run.log_info("=== PIPELINE SUMMARY ===")
     current_run.log_info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
-    current_run.log_info(f"Extracted: {summary['extraction']['original_records']} records")
-    current_run.log_info(f"Transformed: {summary['extraction']['final_records']} records")
+    current_run.log_info(f"Extracted: {source_count} records from source DHIS2")
+    current_run.log_info(f"Relevant (after mapping filter): {filtered_count} records")
+    current_run.log_info(f"Transformed (after DE/COC mapping): {transformed_count} records")
+    current_run.log_info(f"After COC validation: {coc_filtered_count} records")
+    current_run.log_info(f"Dropped by value validation: {validation_dropped} records")
     current_run.log_info(f"Imported: {summary['import']['imported']} records")
     current_run.log_info(f"Updated: {summary['import']['updated']} records")
     current_run.log_info(f"Ignored: {summary['import']['ignored']} records")

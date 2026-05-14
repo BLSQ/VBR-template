@@ -89,7 +89,7 @@ def isodate_to_period_type(date_str: str, period_type: str) -> Period:
         period_str = dt.strftime("%Y%m")
 
     elif period_type == "BiMonthly":
-        period_str = f"{dt.year}0{(dt.month - 1) // 2 + 1}"
+        period_str = f"{dt.year}{(dt.month - 1) // 2 + 1:02d}B"
 
     elif period_type == "Quarterly":
         period_str = f"{dt.year}Q{(dt.month - 1) // 3 + 1}"

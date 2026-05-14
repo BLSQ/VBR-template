@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Any
 
@@ -7,7 +8,6 @@ from openhexa.sdk import DHIS2Connection, current_run
 from openhexa.toolbox.dhis2 import DHIS2
 
 import config
-from utils import _chunked
 
 
 def get_dhis2_client(connection: DHIS2Connection, use_cache: bool) -> DHIS2:
@@ -32,18 +32,6 @@ def validate_connection(dhis2: DHIS2, name: str = "DHIS2") -> None:
 
 
 # --- Metadata queries ---
-
-
-def get_dataset_org_units(dhis: DHIS2, dataset_id: str) -> list[str]:
-    """Retrieve the list of organization unit IDs associated with a given dataset.
-
-    Returns:
-        list[str]: A list of organization unit IDs linked to the specified dataset.
-    """
-    response = dhis.api.get(
-        f"dataSets/{dataset_id}.json", params={"fields": "organisationUnits[id]"}
-    )
-    return [ou["id"] for ou in response.get("organisationUnits", [])]
 
 
 def get_datasets_as_dict(dhis: DHIS2) -> dict:
@@ -125,11 +113,9 @@ def extract_source_data(
         data_values = pl.DataFrame(data_values_list, infer_schema_length=None).rename(
             {
                 "dataElement": "data_element_id",
-                "period": "period",
                 "orgUnit": "organisation_unit_id",
                 "categoryOptionCombo": "category_option_combo_id",
                 "attributeOptionCombo": "attribute_option_combo_id",
-                "value": "value",
             }
         )
 
@@ -150,50 +136,75 @@ def extract_source_data(
 # --- Payload preparation ---
 
 
-def get_ccs_for_de(dhis2: DHIS2, des_id: list[str]) -> dict[str, str]:
-    """Get category combo IDs for a list of data element IDs.
+def fetch_de_category_combos(
+    dhis2: DHIS2,
+    fields: str = "id,categoryCombo[categoryOptionCombos[id]]",
+    filters: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch data elements with their category option combos from DHIS2.
 
-    Returns:
-        dict[str, str]: Mapping of data element ID to category combo ID.
+    Parameters
+    ----------
+    dhis2 : DHIS2
+        DHIS2 instance.
+    fields : str, optional
+        Comma-separated DHIS2 fields to include in the response.
+    filters : list of str, optional
+        DHIS2 query filters.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Raw list of data element dicts with nested categoryCombo/categoryOptionCombos.
     """
-    de_to_cc = {}
-    for chunk in _chunked(des_id, config.de_chunk):
-        ids = ",".join(chunk)
-        r = dhis2.api.get(
-            "dataElements",
-            params={
-                "filter": f"id:in:[{ids}]",
-                "fields": "id,categoryCombo[id]",
-                "paging": "false",
-            },
-        )
-        for de in r.get("dataElements", []):
-            if "categoryCombo" in de and "id" in de["categoryCombo"]:
-                de_to_cc[de["id"]] = de["categoryCombo"]["id"]
 
-    return de_to_cc
+    def format_element(element: dict[str, Any], fields: str) -> dict[str, Any]:
+        splitted_fields = [f.split("[")[0] for f in re.split(r",(?![^\[]*\])", fields)]
+        return {key: element.get(key) for key in splitted_fields}
+
+    params = {"fields": fields}
+    if filters:
+        params["filter"] = filters
+
+    return [
+        format_element(element, fields)
+        for page in dhis2.api.get_paged("dataElements", params=params)
+        for element in page.get("dataElements", [])
+    ]
 
 
-def get_cocs_for_cc(dhis2: DHIS2, cc_ids: list[str]) -> dict[str, set]:
-    """Get category option combo IDs for a list of category combo IDs.
+def get_coc_per_des(
+    dhis2: DHIS2,
+    filters: list[str] | None = None,
+) -> dict[str, set]:
+    """Get valid category option combo IDs per data element.
 
-    Returns:
-        dict[str, set]: Mapping of category combo ID to set of category option combo IDs.
+    Parameters
+    ----------
+    dhis2 : DHIS2
+        DHIS2 instance.
+    filters : list of str, optional
+        DHIS2 query filter expressions.
+
+    Returns
+    -------
+    dict[str, set]
+        Mapping of data element ID to set of valid category option combo IDs.
     """
-    cc_to_coc = {}
-    for chunk in _chunked(cc_ids, config.cc_chunk):
-        ids = ",".join(chunk)
-        r = dhis2.api.get(
-            "categoryCombos",
-            params={
-                "filter": f"id:in:[{ids}]",
-                "fields": "id,categoryOptionCombos[id]",
-                "paging": "false",
-            },
+    meta = fetch_de_category_combos(
+        dhis2, fields="id,categoryCombo[categoryOptionCombos[id]]", filters=filters
+    )
+    df = pl.DataFrame(meta, infer_schema_length=None)
+    df = (
+        df.with_columns(
+            pl.col("categoryCombo")
+            .struct.field("categoryOptionCombos")
+            .list.eval(pl.element().struct.field("id"))
+            .alias("coc_ids")
         )
-        for cc in r.get("categoryCombos", []):
-            cc_to_coc[cc["id"]] = {coc["id"] for coc in cc.get("categoryOptionCombos", [])}
-    return cc_to_coc
+        .select(["id", "coc_ids"])
+    )
+    return {row["id"]: set(row["coc_ids"] or []) for row in df.iter_rows(named=True)}
 
 
 # --- Data posting ---
@@ -269,6 +280,7 @@ def post_to_target(
                 json={"dataValues": chunk},
                 params=params,
             )
+            response.raise_for_status()
             response_dict = response.json()
 
             if "response" in response_dict:
@@ -283,7 +295,7 @@ def post_to_target(
                 chunk_conflicts = import_summary.get("conflicts", [])
                 if chunk_conflicts:
                     aggregated_results["conflicts"].extend(chunk_conflicts)
-                    error_response = _get_response_value_errors(response_dict, chunk=chunk)
+                    error_response = _get_response_value_errors(import_summary, chunk=chunk)
                     failed_chunks.append(
                         {"chunk_number": chunk_num, "errors_import": error_response}
                     )
@@ -295,7 +307,10 @@ def post_to_target(
                 )
 
         except requests.exceptions.RequestException as e:
-            response_dict = response.json() if response else None
+            try:
+                response_dict = response.json() if response else None
+            except Exception:
+                response_dict = None
             error_response = _get_response_value_errors(response_dict, chunk=chunk)
             current_run.log_error(f"  ✗ Chunk {chunk_num} failed: {e!s}")
             failed_chunks.append(
@@ -332,8 +347,15 @@ def post_to_target(
                 f"Found {aggregated_results['ignored']} ignored records but no conflict details"
             )
 
+    if not failed_chunks:
+        status = "SUCCESS"
+    elif len(failed_chunks) == num_chunks:
+        status = "FAILURE"
+    else:
+        status = "PARTIAL_FAILURE"
+
     return {
-        "status": "SUCCESS",
+        "status": status,
         "imported": aggregated_results["imported"],
         "updated": aggregated_results["updated"],
         "ignored": aggregated_results["ignored"],

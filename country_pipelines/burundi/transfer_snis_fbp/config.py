@@ -1,9 +1,10 @@
 max_org_unit_per_request = 20
 max_periods_per_request = 5
-de_chunk = 200
-cc_chunk = 100
 chunk_size_post = 500
 use_cache = False
+
+
+att_default = "HllvX50cXC0"
 
 column_mapping = {
     "data_element_id": "dataElement",
@@ -15,4 +16,16 @@ column_mapping = {
 }
 
 
-pipeline_input = "pipelines/transfer_snis_fpb/mapping_files"
+pipeline_input = "pipelines/transfer_snis_fbp/mapping_files"
+
+REQUIRED_ID_COLUMNS = [
+    "ds_id_snis",
+    "de_id_snis",
+    "coc_id_snis_mfp",
+    "coc_id_snis_cam",
+    "coc_id_snis_fbp",
+    "de_id_fbp_dec",
+    "coc_id_fbp_mfp",
+    "coc_id_fbp_cam",
+    "coc_id_fbp_total",
+]
