@@ -43,26 +43,16 @@ def read_csv(file_path: Path) -> pl.DataFrame:
 
 def save_outputs(
     output_dir: Path,
-    filtered_data: pl.DataFrame,
-    transformed_data: pl.DataFrame,
     payload: list[dict],
     post_results: dict[str, Any],
     summary: dict[str, Any],
 ) -> None:
     """Save all pipeline outputs to the run output directory."""
-    if len(filtered_data) > 0:
-        filtered_data.write_parquet(output_dir / "filtered_data.parquet")
-        current_run.add_file_output((output_dir / "filtered_data.parquet").as_posix())
-
-    if len(transformed_data) > 0:
-        transformed_data.write_parquet(output_dir / "transformed_data.parquet")
-        current_run.add_file_output((output_dir / "transformed_data.parquet").as_posix())
-
     if payload:
         pl.DataFrame(payload).write_parquet(output_dir / "payload.parquet")
         current_run.add_file_output((output_dir / "payload.parquet").as_posix())
 
-    failed_chunks = post_results.get("failed_chunks", [])
+    failed_chunks = post_results.get("failed_http_chunks", [])
     if failed_chunks:
         failed_chunks_file = output_dir / "failed_chunks.json"
         with failed_chunks_file.open("w", encoding="utf-8") as f:
@@ -123,7 +113,9 @@ def coerce_value(value, value_type):
                 return False
             return None
         else:
-            current_run.log_warning(f"Unknown DHIS2 value type '{value_type}'; passing value as string")
+            current_run.log_warning(
+                f"Unknown DHIS2 value type '{value_type}'; passing value as string"
+            )
             return str(value)
     except (ValueError, TypeError):
         return None
