@@ -4,7 +4,7 @@ import json
 import os
 import pickle
 import warnings
-from pandas.errors import SettingWithCopyWarning
+import numpy as np
 
 import pandas as pd
 import requests
@@ -16,8 +16,6 @@ from RBV_package import rbv_environment as rbv
 
 import config
 import toolbox
-
-warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
 
 
 @pipeline("BUU_init_VBR")
@@ -42,14 +40,14 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=str,
     help="End month of the extraction (YYYYMM)",
     required=True,
-    default="202410",
+    default="202603",
 )
 @parameter(
     "window",
     type=int,
     help="Number of months to extract",
     required=True,
-    default=2,
+    default=3,
 )
 @parameter(
     "model_name",
@@ -70,7 +68,7 @@ warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
     type=bool,
     default=True,
 )
-@parameter("extract", name="Extract all of the data", type=bool, default=False)
+@parameter("extract", name="Extract all of the data", type=bool, default=True)
 def buu_init_vbr(
     dhis_con,
     hesabu_con,
@@ -198,47 +196,35 @@ def adapt_hesabu_packages(packages):
     """
     for package_id in packages:
         for index, activity in enumerate(packages[package_id]["content"]["activities"]):
-            if "declaree" in activity["inputMappings"].keys():
-                packages[package_id]["content"]["activities"][index]["inputMappings"].update(
-                    adapt_to_coc(
-                        packages[package_id]["content"]["activities"][index]["inputMappings"][
-                            "declaree"
-                        ],
-                        config.category_options_per_dec,
+            for coc_activity in [
+                "declaree_indiv",
+                "nb_cas_remboursement_mfp_80_indiv",
+                "nb_cas_remboursement_complets_indiv",
+            ]:
+                if coc_activity in activity["inputMappings"].keys():
+                    packages[package_id]["content"]["activities"][index]["inputMappings"][
+                        coc_activity
+                    ].update(
+                        adapt_to_coc(
+                            packages[package_id]["content"]["activities"][index]["inputMappings"][
+                                coc_activity
+                            ],
+                        )
                     )
-                )
-                packages[package_id]["content"]["activities"][index]["inputMappings"].pop(
-                    "declaree"
-                )
-            if "declaree_indiv" in activity["inputMappings"].keys():
-                packages[package_id]["content"]["activities"][index]["inputMappings"].update(
-                    adapt_to_coc(
-                        packages[package_id]["content"]["activities"][index]["inputMappings"][
-                            "declaree_indiv"
-                        ],
-                        config.category_options_per_dec_indiv,
-                    )
-                )
-                packages[package_id]["content"]["activities"][index]["inputMappings"].pop(
-                    "declaree_indiv"
-                )
 
     return packages
 
 
-def adapt_to_coc(info, mapping):
-    new_dict = {}
+def adapt_to_coc(info):
     external_reference = info["externalReference"].split(".")[0]
+    coc = info["externalReference"].split(".")[1]
     name = info["name"]
 
-    for dec, coc in mapping.items():
-        new_dict[dec] = {
-            "externalReference": external_reference,
-            "name": name,
-            "categoryOptionCombo": coc,
-        }
-
-    return new_dict
+    return {
+        "externalReference": external_reference,
+        "name": name,
+        "categoryOptionCombo": coc,
+    }
 
 
 def prepare_quantity_data(
@@ -300,14 +286,14 @@ def prepare_quantity_data(
         # We want to take both into account
         data = data.merge(contracts, on="org_unit_id")
         data = data.merge(verification, on=["org_unit_id", "period"], how="left")
-        data = deal_with_declared_partial_values(data)
-        data = deal_with_declared_indiv_values(data)
-        data = data[data["declaree"].notna() & (data["declaree"] != 0)]
+        # data = deal_with_declared_partial_values(data)
+        # data = deal_with_declared_indiv_values(data)
+        # data = data[data["declaree"].notna() & (data["declaree"] != 0)]
 
         data = data[
             list(hesabu_params["quantite_attributes"].keys())
             + list(hesabu_params["contracts_attributes"].keys())
-            + ["provenance_data", "dhis2_is_not_verified"]
+            + ["dhis2_is_not_verified"]
         ]
         data["dhis2_is_not_verified"] = data["dhis2_is_not_verified"].fillna(False)
         data.rename(
@@ -318,8 +304,15 @@ def prepare_quantity_data(
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
+        data["dec_fbp"] = data["dec"] - data["dec_cam"] - data["dec_mfp"]
+
         data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
+        data["ver_cam"] = data["dec_cam"]
+        data["ver_mfp"] = data["dec_mfp"]
+
         data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
+        data["val_cam"] = data["dec_cam"]
+        data["val_mfp"] = data["dec_mfp"]
 
         data.contract_end_date = data.contract_end_date.astype(int)
         data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
@@ -355,20 +348,17 @@ def deal_with_declared_partial_values(data):
     data: pd.DataFrame
         The DataFrame with the declared values updated.
     """
+    cols_to_sum = ["declaree_fbp", "declaree_cam", "declaree_mfp"]
+    for col in cols_to_sum:
+        if col not in data.columns:
+            data[col] = np.NaN
+
     if "declaree" not in data.columns:
-        data["declaree"] = (
-            data["declaree_fbp"].fillna(0)
-            + data["declaree_cam"].fillna(0)
-            + data["declaree_mfp"].fillna(0)
-        )
+        data["declaree"] = sum(data[col].fillna(0) for col in cols_to_sum)
         return data
 
     ser_nan_0 = data["declaree"].isna() | (data["declaree"] == 0)
-    data.loc[ser_nan_0, "declaree"] = (
-        data.loc[ser_nan_0, "declaree_fbp"].fillna(0)
-        + data.loc[ser_nan_0, "declaree_cam"].fillna(0)
-        + data.loc[ser_nan_0, "declaree_mfp"].fillna(0)
-    )
+    data.loc[ser_nan_0, "declaree"] = data.loc[ser_nan_0, cols_to_sum].sum(axis=1, skipna=True)
 
     return data
 
@@ -895,7 +885,7 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
                 f"Fetching data for package {package_name} for {len(org_unit_ids)} org units"
             )
             if len(org_unit_ids) > 0:
-                data_extraction.fetch_data_values(
+                fetch_data_values(
                     dhis,
                     deg_external_reference,
                     org_unit_ids,
@@ -917,6 +907,112 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
             org_unit_ids = list(org_unit_ids)
             full_list_ous.extend(org_unit_ids)
     return full_list_ous
+
+
+def fetch_data_values(
+    dhis, deg_external_reference, org_unit_ids, periods, activities, package_id, path
+):
+    """
+    Get the datavalues from DHIS2.
+
+    Parameters
+    ----------
+    dhis: object
+        Connection to the DHIS2 instance.
+    deg_external_reference: str
+        It will help us to find the data values we are interested in.
+    org_unit_ids: list
+        The IDs of the organizational units we are interested in.
+    periods: list
+        The periods we are interested in.
+    activities: list
+        The activities we are interested in. It might have a CategoryOptionCombo.
+    package_id: str
+        The ID of the package we are interested in.
+    path: str
+        The path where the packages are stored.
+    """
+    for monthly_period in periods:
+        if os.path.exists(f"{path}/{package_id}/{monthly_period}.csv"):
+            current_run.log_info(
+                f"Data for package {package_id} for {monthly_period} already fetched"
+            )
+            continue
+        chunks = {}
+        values = []
+        nb_org_unit_treated = 0
+        for i in range(1, len(org_unit_ids) + 1):
+            chunks.setdefault(i // 10, []).append(org_unit_ids[i - 1])
+        for i, _ in chunks.items():
+            data_values = {}
+            param_ou = "".join([f"&orgUnit={ou}" for ou in chunks[i]])
+            url = f"dataValueSets.json?dataElementGroup={deg_external_reference}{param_ou}&period={monthly_period}"
+            res = dhis.api.get(url)
+            # data_values.exten
+            if "dataValues" in res:
+                data_values = res["dataValues"]
+            else:
+                continue
+            for org_unit_id in chunks[i]:
+                for activity in activities:
+                    current_value = {
+                        "period": monthly_period,
+                        "org_unit_id": org_unit_id,
+                        "activity_name": activity["name"],
+                        "activity_code": activity["code"],
+                    }
+                    some_values = False
+                    for code in activity.get("inputMappings").keys():
+                        input_mapping = activity.get("inputMappings").get(code)
+                        if "categoryOptionCombo" in input_mapping.keys():
+                            selected_values = [
+                                dv
+                                for dv in data_values
+                                if dv["orgUnit"] == org_unit_id
+                                and str(dv["period"]) == str(monthly_period)
+                                and dv["dataElement"] == input_mapping["externalReference"]
+                                and dv["categoryOptionCombo"]
+                                == input_mapping["categoryOptionCombo"]
+                            ]
+                        else:
+                            selected_values = [
+                                dv
+                                for dv in data_values
+                                if dv["orgUnit"] == org_unit_id
+                                and str(dv["period"]) == str(monthly_period)
+                                and dv["dataElement"] == input_mapping["externalReference"]
+                            ]
+                        if len(selected_values) > 0:
+                            # print(code, monthly_period, org_unit_id, len(selected_values), selected_values[0]["value"] if len(selected_values) >0 else None)
+                            try:
+                                current_value[code] = selected_values[0]["value"]
+                                some_values = True
+                            except:
+                                print(
+                                    "Error",
+                                    code,
+                                    monthly_period,
+                                    org_unit_id,
+                                    len(selected_values),
+                                    selected_values[0],
+                                )
+
+                    if some_values:
+                        values.append(current_value)
+            nb_org_unit_treated += 10
+            if nb_org_unit_treated % 100 == 0:
+                current_run.log_info(f"{nb_org_unit_treated} org units treated")
+        values_df = pd.DataFrame(values)
+        if values_df.shape[0] > 0:
+            if not os.path.exists(f"{path}/{package_id}"):
+                os.makedirs(f"{path}/{package_id}")
+            values_df.to_csv(
+                f"{path}/{package_id}/{monthly_period}.csv",
+                index=False,
+            )
+            current_run.log_info(
+                f"Data ({len(values_df)}) for package {package_id} for {monthly_period} treated"
+            )
 
 
 def fetch_contracts(dhis, contract_program_id, model_name):
