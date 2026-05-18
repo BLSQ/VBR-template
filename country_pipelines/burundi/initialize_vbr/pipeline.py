@@ -3,7 +3,7 @@
 import json
 import os
 import pickle
-import warnings
+from typing import Any
 import numpy as np
 
 import pandas as pd
@@ -70,16 +70,16 @@ import toolbox
 )
 @parameter("extract", name="Extract all of the data", type=bool, default=True)
 def buu_init_vbr(
-    dhis_con,
-    hesabu_con,
-    program_id,
-    period,
-    extract,
-    model_name,
-    window,
-    selection_provinces,
-    clean_data,
-):
+    dhis_con: DHIS2Connection,
+    hesabu_con: str,
+    program_id: str,
+    period: str,
+    extract: bool,
+    model_name: str,
+    window: int,
+    selection_provinces: bool,
+    clean_data: bool,
+) -> None:
     """Pipeline to extract the necessary data.
 
     We use Hesabu and DHIS2 to obtain information about different health centers.
@@ -101,8 +101,8 @@ def buu_init_vbr(
         ou_list, periods, packages, contracts, hesabu_params, extract, model_name, verification
     )
     quant = clean_quant_data(quant_full, clean_data, model_name)
-    qual = prepare_quality_data(ou_list, periods, packages, hesabu_params, extract, model_name)
-    save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces)
+    # qual = prepare_quality_data(ou_list, periods, packages, hesabu_params, extract, model_name)
+    save_simulation_environment(quant, hesabu_params, model_name, selection_provinces)
 
 
 def get_actual_verification(dhis: DHIS2, periods: list, ou_list: list) -> pd.DataFrame:
@@ -180,7 +180,7 @@ def get_hesabu_token(dhis: DHIS2) -> str:
         raise ValueError(f"Error retrieving hesabu token from the DHIS2 instance: {e}")
 
 
-def adapt_hesabu_packages(packages):
+def adapt_hesabu_packages(packages: dict) -> dict:
     """
     We add the new declared values per payment mode to the hesabu packages.
 
@@ -215,7 +215,7 @@ def adapt_hesabu_packages(packages):
     return packages
 
 
-def adapt_to_coc(info):
+def adapt_to_coc(info: dict) -> dict:
     external_reference = info["externalReference"].split(".")[0]
     coc = info["externalReference"].split(".")[1]
     name = info["name"]
@@ -228,8 +228,15 @@ def adapt_to_coc(info):
 
 
 def prepare_quantity_data(
-    done, periods, packages, contracts, hesabu_params, extract, model_name, verification
-):
+    done: list,
+    periods: list,
+    packages: dict,
+    contracts: pd.DataFrame,
+    hesabu_params: dict,
+    extract: bool,
+    model_name: str,
+    verification: pd.DataFrame,
+) -> pd.DataFrame:
     """Create a CSV file with the quantity data.
     (1) We combine all of the data from the packages cvs's that have quantity data.
     (2) We merge it with the data in the contracts.csv file.
@@ -314,8 +321,8 @@ def prepare_quantity_data(
         data["val_cam"] = data["dec_cam"]
         data["val_mfp"] = data["dec_mfp"]
 
-        data.contract_end_date = data.contract_end_date.astype(int)
-        data = data[(data.contract_end_date >= data.month) & (~data.type_ou.isna())]
+        data["contract_end_date"] = data["contract_end_date"].astype(int)
+        data = data[(data["contract_end_date"] >= data["month"]) & (~data["type_ou"].isna())]
 
         data["gain_verif"] = (data["dec_fbp"] - data["val_fbp"]) * data["tarif"]
         data["subside_sans_verification"] = data["dec_fbp"] * data["tarif"]
@@ -334,7 +341,7 @@ def prepare_quantity_data(
     return data
 
 
-def deal_with_declared_partial_values(data):
+def deal_with_declared_partial_values(data: pd.DataFrame) -> pd.DataFrame:
     """
     For the cases where declaree is empty, calculate it as declaree_fbp + declaree_cam + declaree_mfp.
 
@@ -363,7 +370,7 @@ def deal_with_declared_partial_values(data):
     return data
 
 
-def deal_with_declared_indiv_values(data):
+def deal_with_declared_indiv_values(data: pd.DataFrame) -> pd.DataFrame:
     """
     When declaree is them still empty, replace it with the declaree_indiv.
 
@@ -390,7 +397,14 @@ def deal_with_declared_indiv_values(data):
     return data
 
 
-def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_name):
+def prepare_quality_data(
+    done: list,
+    periods: list,
+    packages: dict,
+    hesabu_params: dict,
+    extract: bool,
+    model_name: str,
+) -> pd.DataFrame:
     """Create a CSV file with the quality data.
     (1) We combine all of the data from the packages cvs's that have quality data.
     (2) We select the columns that we are interested in.
@@ -452,15 +466,15 @@ def prepare_quality_data(done, periods, packages, hesabu_params, extract, model_
     return data
 
 
-def save_simulation_environment(quant, qual, hesabu_params, model_name, selection_provinces):
+def save_simulation_environment(
+    quant: pd.DataFrame, hesabu_params: dict, model_name: str, selection_provinces: bool
+) -> list:
     """We save the simulation in a pickle file. We will then access this pickle file in the second pipeline.
 
     Parameters
     ----------
     quant: pd.DataFrame
         The quantity data.
-    qual: pd.DataFrame
-        The quality data.
     hesabu_params: dict
         Contains the information we want to extract from Hesabu.
     model_name: str
@@ -475,7 +489,8 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
     """
     regions = []
     orgunits = quant["ou"].unique()
-    quality_indicators = sorted(qual["indicator"].unique())
+    quality_indicators = []
+    qual = pd.DataFrame(columns=["ou", "quarter", "indicator", "denom", "num", "month"])
     if (
         selection_provinces
         and "selection_provinces" in hesabu_params
@@ -546,10 +561,11 @@ def save_simulation_environment(quant, qual, hesabu_params, model_name, selectio
     return regions
 
 
-def clean_quant_data(quant, clean_data, model_name):
+def clean_quant_data(quant: pd.DataFrame, clean_data: bool, model_name: str) -> pd.DataFrame:
     """
     Clean the quantity data. Only if the bool_clean_data is set to True.
-    We remove the rows where the validated value is a lot bigger than the declared value.
+    We remove rows with no data, problematic services/OUs, inconsistent dec/ver/val combinations,
+    null tarifs, ordering violations (ver > dec by more than 10%), and CAM/MFP contamination.
 
     Parameters
     ----------
@@ -567,56 +583,50 @@ def clean_quant_data(quant, clean_data, model_name):
     """
     if clean_data:
         outliers = pd.DataFrame()
-        original_len = len(quant)
-        quant, outliers = remove_weirdly_high_validated_values(quant, outliers)
-        quant, outliers = remove_null_tarifs(quant, outliers)
-        quant, outliers = remove_fbp_not_predominant(quant, outliers)
-        quant, outliers = remove_negative_values(quant, outliers)
-        per_outliers = 100 * len(outliers) / original_len
-        current_run.log_info(
-            f"I have identified {len(outliers)} outliers ({per_outliers:.2f}%). I will save them in a csv file."
-        )
         output_dir = f"{workspace.files_path}/pipelines/initialize_vbr/data/quantity_data"
         os.makedirs(output_dir, exist_ok=True)
 
-        outliers.to_csv(
-            f"{output_dir}/outliers_quantity_data_{model_name}.csv",
-            index=False,
+        n_before = len(quant)
+        quant, outliers = remove_no_data_rows(quant, outliers)
+        dropped = n_before - len(quant)
+        current_run.log_info(
+            f"remove_no_data_rows: removed {dropped} rows ({100 * dropped / n_before:.1f}% of input)"
         )
+
+        original_len = len(quant)
+        for step in [
+            remove_problematic_services,
+            remove_problematic_ous,
+            remove_ver_val_without_dec,
+            remove_dec_without_ver_and_val,
+            remove_null_tarifs,
+            remove_ver_exceeds_dec,
+            remove_cam_mfp_contamination,
+        ]:
+            n_before = len(quant)
+            quant, outliers = step(quant, outliers)
+            dropped = n_before - len(quant)
+            current_run.log_info(
+                f"{step.__name__}: removed {dropped} rows ({100 * dropped / original_len:.1f}% of original)"
+            )
+
+        total_dropped = original_len - len(quant)
+        current_run.log_info(
+            f"Total removed: {total_dropped} rows ({100 * total_dropped / original_len:.1f}%). "
+            f"{len(quant)} rows remain."
+        )
+
+        outliers.to_csv(f"{output_dir}/outliers_quantity_data_{model_name}.csv", index=False)
+        quant.to_csv(f"{output_dir}/cleaned_quantity_data_{model_name}.csv", index=False)
 
     return quant
 
 
-def remove_weirdly_high_validated_values(quant, outliers):
-    """
-    Remove the rows where the validated value is a lot bigger than the declared value.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    """
-    max_difference = -1500
-    quant["ratio dec-val"] = 100 * (quant["dec"] - quant["val"]) / quant["ver"]
-    ser_less_than_1500 = quant["ratio dec-val"] < max_difference
-    new_outliers = quant[ser_less_than_1500].sort_values("ratio dec-val")
-    quant = quant[~ser_less_than_1500]
-    quant = quant.drop(columns=["ratio dec-val"])
-    new_outliers = new_outliers.drop(columns=["ratio dec-val"])
-    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
-    return quant, outliers
-
-
-def remove_null_tarifs(quant, outliers):
+def remove_null_tarifs(
+    quant: pd.DataFrame,
+    outliers: pd.DataFrame,
+    months_okey: list = config.MONTHS_OKEY_DEC_WITHOUT_VER_VAL,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Remove the rows where the tarif is null.
 
@@ -626,6 +636,8 @@ def remove_null_tarifs(quant, outliers):
         The quantity data.
     outliers: pd.DataFrame
         The DataFrame where the outliers are stored.
+    months_okey: list
+        The list of months where the tarif can be null.
 
     Returns
     -------
@@ -634,44 +646,19 @@ def remove_null_tarifs(quant, outliers):
     outliers: pd.DataFrame
         The DataFrame where the outliers are stored.
     """
-    ser_null_tarif = quant["tarif"].isna()
+    ser_null_tarif = quant["tarif"].isna() & (~quant["month"].isin(months_okey))
     new_outliers = quant[ser_null_tarif]
+    new_outliers["cleaning_reason"] = "Null tarif"
     quant = quant[~ser_null_tarif]
     outliers = pd.concat([outliers, new_outliers], ignore_index=True)
     return quant, outliers
 
 
-def remove_fbp_not_predominant(quant, outliers, min_percentage=0.95):
+def remove_no_data_rows(
+    quant: pd.DataFrame, outliers: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Remove the rows where the FBP-declared values is not a big percentage of the total declared values.
-
-    Parameters
-    ----------
-    quant: pd.DataFrame
-        The quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    min_percentage: float
-        The minimum percentage of the FBP-declared values compared to the total declared values.
-        Default is 0.95, meaning that the FBP-declared values should be at least 95% of the total declared values.
-
-    Returns
-    -------
-    quant: pd.DataFrame
-        The cleaned quantity data.
-    outliers: pd.DataFrame
-        The DataFrame where the outliers are stored.
-    """
-    ser_fbp_not_predominant = quant["dec_fbp"] / quant["dec"] < min_percentage
-    new_outliers = quant[ser_fbp_not_predominant]
-    quant = quant[~ser_fbp_not_predominant]
-    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
-    return quant, outliers
-
-
-def remove_negative_values(quant, outliers):
-    """
-    Remove the rows where the declared/verified/validated values are negative.
+    Remove the rows where dec, ver, and val are all null or zero.
 
     Parameters
     ----------
@@ -687,15 +674,217 @@ def remove_negative_values(quant, outliers):
     outliers: pd.DataFrame
         The DataFrame where the outliers are stored.
     """
-    list_cols_to_check = ["dec", "ver", "val", "dec_fbp", "val_fbp", "ver_fbp"]
-    ser_negative_values = quant[list_cols_to_check].lt(0).any(axis=1)
-    new_outliers = quant[ser_negative_values]
-    quant = quant[~ser_negative_values]
+    dec_present = quant["dec"].notna() & (quant["dec"] != 0)
+    ver_present = quant["ver"].notna() & (quant["ver"] != 0)
+    val_present = quant["val"].notna() & (quant["val"] != 0)
+    ser_no_data = ~(dec_present | ver_present | val_present)
+    new_outliers = quant[ser_no_data]
+    new_outliers["cleaning_reason"] = "No data: dec, ver and val are all null or zero"
+    quant = quant[~ser_no_data]
     outliers = pd.concat([outliers, new_outliers], ignore_index=True)
     return quant, outliers
 
 
-def get_dhis2(con_oh):
+def remove_problematic_services(
+    quant: pd.DataFrame, outliers: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Remove the rows for services that have no declared data across all periods.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_problematic_services = quant["service"].isin(config.PROBLEMATIC_SERVICES)
+    new_outliers = quant[ser_problematic_services]
+    new_outliers["cleaning_reason"] = "Problematic service: no declared data across all periods"
+    quant = quant[~ser_problematic_services]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_problematic_ous(
+    quant: pd.DataFrame, outliers: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Remove the rows for org units that have no declared data or no verified/validated data.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_problematic_ous = quant["ou"].isin(config.PROBLEMATIC_OUS)
+    new_outliers = quant[ser_problematic_ous]
+    new_outliers["cleaning_reason"] = (
+        "Problematic OU: no declared data or no verified/validated data"
+    )
+    quant = quant[~ser_problematic_ous]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_ver_val_without_dec(
+    quant: pd.DataFrame, outliers: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Remove the rows where verified or validated data is present but declared is absent (null or zero).
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    dec_absent = quant["dec"].isna() | (quant["dec"] == 0)
+    ver_present = quant["ver"].notna() & (quant["ver"] != 0)
+    val_present = quant["val"].notna() & (quant["val"] != 0)
+    ser_ver_val_without_dec = (ver_present | val_present) & dec_absent
+    new_outliers = quant[ser_ver_val_without_dec]
+    new_outliers["cleaning_reason"] = (
+        "Inconsistency: verified or validated present but declared absent"
+    )
+    quant = quant[~ser_ver_val_without_dec]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_dec_without_ver_and_val(
+    quant: pd.DataFrame,
+    outliers: pd.DataFrame,
+    months_okey: list = config.MONTHS_OKEY_DEC_WITHOUT_VER_VAL,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Remove the rows where declared data is present but both verified and validated are absent (null or zero).
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    dec_present = quant["dec"].notna() & (quant["dec"] != 0)
+    ver_absent = quant["ver"].isna() | (quant["ver"] == 0)
+    val_absent = quant["val"].isna() | (quant["val"] == 0)
+    ser_dec_without_ver_and_val = (
+        dec_present & ver_absent & val_absent & (~quant["month"].isin(months_okey))
+    )
+    new_outliers = quant[ser_dec_without_ver_and_val]
+    new_outliers["cleaning_reason"] = (
+        "Inconsistency: declared present but both verified and validated absent"
+    )
+    quant = quant[~ser_dec_without_ver_and_val]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_ver_exceeds_dec(
+    quant: pd.DataFrame,
+    outliers: pd.DataFrame,
+    max_pct: float = config.MAX_PCT_VER_EXCEEDS_DEC,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Remove the rows where verified exceeds declared by more than max_pct percent.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    max_pct: float
+        The maximum allowed percentage by which verified can exceed declared.
+        Default is config.MAX_PCT_VER_EXCEEDS_DEC.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    ser_ver_exceeds_dec = (100 * (quant["ver"] - quant["dec"]) / quant["dec"]) > max_pct
+    new_outliers = quant[ser_ver_exceeds_dec]
+    new_outliers["cleaning_reason"] = (
+        f"Ordering violation: verified exceeds declared by more than {max_pct}%"
+    )
+    quant = quant[~ser_ver_exceeds_dec]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def remove_cam_mfp_contamination(
+    quant: pd.DataFrame,
+    outliers: pd.DataFrame,
+    max_pct: float = config.MAX_PCT_CAM_MFP,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Remove the rows where CAM and MFP declared values together exceed max_pct percent of total declared.
+
+    Parameters
+    ----------
+    quant: pd.DataFrame
+        The quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    max_pct: float
+        The maximum allowed percentage of CAM+MFP declared out of total declared.
+        Default is config.MAX_PCT_CAM_MFP.
+
+    Returns
+    -------
+    quant: pd.DataFrame
+        The cleaned quantity data.
+    outliers: pd.DataFrame
+        The DataFrame where the outliers are stored.
+    """
+    cam_mfp_share = 100 * (quant["dec_cam"].fillna(0) + quant["dec_mfp"].fillna(0)) / quant["dec"]
+    ser_cam_mfp_contamination = cam_mfp_share > max_pct
+    new_outliers = quant[ser_cam_mfp_contamination]
+    new_outliers["cleaning_reason"] = (
+        f"CAM/MFP contamination: CAM+MFP share of declared exceeds {max_pct}%"
+    )
+    quant = quant[~ser_cam_mfp_contamination]
+    outliers = pd.concat([outliers, new_outliers], ignore_index=True)
+    return quant, outliers
+
+
+def get_dhis2(con_oh: DHIS2Connection) -> DHIS2:
     """Start the connection to the DHIS2 instance.
 
     Parameters
@@ -711,7 +900,7 @@ def get_dhis2(con_oh):
     return DHIS2(con_oh)
 
 
-def get_hesabu_vbr_setup():
+def get_hesabu_vbr_setup() -> dict:
     """Open the JSON file with the Hesabu setup.
 
     Returns
@@ -724,7 +913,7 @@ def get_hesabu_vbr_setup():
     )
 
 
-def get_hesabu_package_ids(hesabu_setup):
+def get_hesabu_package_ids(hesabu_setup: dict) -> list:
     """Get the package IDs from the Hesabu setup.
 
     Parameters
@@ -740,7 +929,7 @@ def get_hesabu_package_ids(hesabu_setup):
     return [int(id) for id in hesabu_setup["packages"]]
 
 
-def get_contract_group_unit_id(hesa_setup):
+def get_contract_group_unit_id(hesa_setup: dict) -> str:
     """Get the contract ID from the Hesabu setup.
 
     Parameters
@@ -756,7 +945,7 @@ def get_contract_group_unit_id(hesa_setup):
     return hesa_setup["main_contract_id"]
 
 
-def get_hesabu(con_hesabu):
+def get_hesabu(con_hesabu: str) -> Any:
     """Start the connection to the Hesabu instance.
 
     Parameters
@@ -772,7 +961,7 @@ def get_hesabu(con_hesabu):
     return workspace.get_connection(con_hesabu)
 
 
-def fetch_hesabu_package(con_hesabu, package_ids, hesabu_token):
+def fetch_hesabu_package(con_hesabu: Any, package_ids: list, hesabu_token: str) -> dict:
     """Using the Hesabu connection, get the codes for the information that we need from each of the packages.
     You have a list of package IDs. They correspond to the different informations that we are going to want to extract from DHIS2.
     These packages contain different informations. We go into the Hesabu page to get the codes/names/etc of those informations.
@@ -836,7 +1025,9 @@ def fetch_hesabu_package(con_hesabu, package_ids, hesabu_token):
     return hesabu_packages
 
 
-def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
+def get_package_values(
+    dhis: DHIS2, periods: list, hesabu_packages: dict, contract_group: str, extract: bool
+) -> list:
     """Create a CSV file for each of the packages and each of the periods.
     Each of the packages contains a kind of information (for example, the xxxx).
     In order to fill the CVSs files, we use the codes/names/etc that we extracted from Hesabu.
@@ -910,8 +1101,14 @@ def get_package_values(dhis, periods, hesabu_packages, contract_group, extract):
 
 
 def fetch_data_values(
-    dhis, deg_external_reference, org_unit_ids, periods, activities, package_id, path
-):
+    dhis: DHIS2,
+    deg_external_reference: str,
+    org_unit_ids: list,
+    periods: list,
+    activities: list,
+    package_id: int,
+    path: str,
+) -> None:
     """
     Get the datavalues from DHIS2.
 
@@ -1015,7 +1212,7 @@ def fetch_data_values(
             )
 
 
-def fetch_contracts(dhis, contract_program_id, model_name):
+def fetch_contracts(dhis: DHIS2, contract_program_id: str, model_name: str) -> pd.DataFrame:
     """Using the DHIS2 connection and the ID of the contract, get the description of the data elements.
 
     Parameters
@@ -1080,7 +1277,7 @@ def fetch_contracts(dhis, contract_program_id, model_name):
     return records_df
 
 
-def get_periods(period, window):
+def get_periods(period: str, window: int) -> list:
     """Get the periods.
 
     Parameters
@@ -1101,7 +1298,7 @@ def get_periods(period, window):
     return toolbox.get_date_series(start, end, frequency)
 
 
-def get_period_type(period):
+def get_period_type(period: str) -> str:
     """Decide if the period is a month or a quarter.
 
     Parameters
@@ -1119,7 +1316,7 @@ def get_period_type(period):
     return "month"
 
 
-def get_start_end(period, window, frequency):
+def get_start_end(period: str, window: int, frequency: str) -> tuple[str, str]:
     """Get the periods.
 
     Parameters
