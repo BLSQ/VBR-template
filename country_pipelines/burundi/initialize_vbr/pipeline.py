@@ -311,13 +311,13 @@ def prepare_quantity_data(
             columns=hesabu_params["quantite_attributes"],
             inplace=True,
         )
-        data["dec_fbp"] = data["dec"] - data["dec_cam"] - data["dec_mfp"]
+        data["dec_fbp"] = data["dec"] - data["dec_cam"].fillna(0) - data["dec_mfp"].fillna(0)
 
-        data["ver_fbp"] = data["ver"] - data["dec_cam"] - data["dec_mfp"]
+        data["ver_fbp"] = data["ver"] - data["dec_cam"].fillna(0) - data["dec_mfp"].fillna(0)
         data["ver_cam"] = data["dec_cam"]
         data["ver_mfp"] = data["dec_mfp"]
 
-        data["val_fbp"] = data["val"] - data["dec_cam"] - data["dec_mfp"]
+        data["val_fbp"] = data["val"] - data["dec_cam"].fillna(0) - data["dec_mfp"].fillna(0)
         data["val_cam"] = data["dec_cam"]
         data["val_mfp"] = data["dec_mfp"]
 

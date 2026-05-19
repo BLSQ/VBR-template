@@ -1,5 +1,9 @@
 import pandas as pd
 
+from openhexa.toolbox.dhis2.periods import Month, Quarter
+from RBV_package import dates
+from RBV_package.rbv_environment import Orgunit
+
 import config_toolbox as config
 
 
@@ -150,3 +154,54 @@ def get_statistics(self, period):
     )
 
     return new_row
+
+
+def get_date_series(start, end, type):
+    """
+    Get a list of consecutive months or quarters between two dates.
+
+    Parameters:
+    --------------
+    start: int
+        The starting date (e.g. 201811)
+    end: int
+        The ending date (e.g. 201811)
+    type: str
+        The type of period to generate ("month" or "quarter").
+
+    Returns
+    ------
+    range: list
+        A list of consecutive months or quarters between the start and end dates.
+    """
+    if type == "trimestre":
+        q1 = Quarter.from_string(start)
+        q2 = Quarter.from_string(end)
+        range = q1.get_range(q2)
+    else:
+        m1 = Month.from_string(start)
+        m2 = Month.from_string(end)
+        range = m1.get_range(m2)
+    return range
+
+
+def set_window(ou: Orgunit, window) -> None:
+    """
+    Select the quantitative data for the observation window.
+
+    Parameters
+    ----------
+    vbr_object : VBR
+        The VBR object with all the configuration.
+    """
+
+    range = [
+        str(elem)
+        for elem in get_date_series(
+            str(dates.months_before(ou.month, window)),
+            str(dates.months_before(ou.month, 1)),
+            "month",
+        )
+    ]
+    ou.quantite_window = ou.quantite[ou.quantite[ou.period_type].isin(range)]
+    ou.qualite_window = ou.qualite[ou.qualite[ou.period_type].isin(range)]
