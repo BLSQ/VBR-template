@@ -2,6 +2,8 @@ from collections.abc import Iterator
 
 categoryOptionCombo = "HllvX50cXC0"
 ver_code = "W3VrEN4edEz"
+mark_gasc = "GASC"
+path_quantity_data = "pipelines/initialize_vbr/data/quantity_data/quantity_data_ext_1805.csv"
 
 
 def split_list(src_list: list, length: int) -> Iterator[list]:
