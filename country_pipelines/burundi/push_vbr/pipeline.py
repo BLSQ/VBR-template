@@ -49,7 +49,7 @@ import config
     default=True,
     help="If False, we will actually push the verification data to DHIS2",
 )
-@parameter("add_gasc", name="Push also verification for GASC", type=bool, default=True)
+@parameter("add_gasc", name="Push also verification for GASC", type=bool, default=False)
 @parameter("add_other_ous", name="Push verification for OUs not in list", type=bool, default=True)
 def push_vbr(dhis_con, file_to_push, dry_run_taux, dry_run_ver, add_gasc, add_other_ous):
     """
@@ -200,9 +200,9 @@ def get_data_mod():
         The data to push to DHIS2
 
     """
-    file_name = "model___ext_1805-prov___national-prd___202603-service.csv"
+    file_name = "model___ext_2005-prov___national-prd___202603-service.csv"
     pipeline_folder = "run_vbr"
-    file_path = "/home/leyregarrido/01_github_repos/VBR-template/country_pipelines/burundi/push_vbr/model___ext_1805-prov___national-prd___202603-service.csv"
+    file_path = "/home/leyregarrido/01_github_repos/VBR-template/country_pipelines/burundi/push_vbr/model___ext_2005-prov___national-prd___202603-service.csv"
     target_folder = "temp"
     pattern = r"model___.+-prov___.+-prd___.+-service\.csv$"
     if not re.match(pattern, file_name):
@@ -580,6 +580,10 @@ def push_data_elements(
                     "importStrategy": strategy,
                     "preheatCache": True,
                     "skipAudit": True,
+                    "strictPeriods": True,
+                    "strictDataElements": True,
+                    "strictCategoryOptionCombos": True,
+                    "reportMode": "ERRORS",
                 },  # speed!
             )
             r.raise_for_status()
@@ -587,7 +591,7 @@ def push_data_elements(
             try:
                 response_json = r.json()
                 status = response_json.get("status")
-                response = response_json.get("importCount")
+                response = response_json.get("response").get("importCount")
             except json.JSONDecodeError as e:
                 summary["ERRORS"].append(
                     f"Response JSON decoding failed: {e}"
@@ -596,7 +600,7 @@ def push_data_elements(
                 status = None
                 response = None
 
-            if status != "SUCCESS" and response:
+            if status not in ("SUCCESS", "OK") and response:
                 summary["ERRORS"].append(response)
 
             if response:

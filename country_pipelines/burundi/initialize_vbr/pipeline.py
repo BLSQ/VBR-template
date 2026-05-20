@@ -40,14 +40,14 @@ import toolbox
     type=str,
     help="End month of the extraction (YYYYMM)",
     required=True,
-    default="202603",
+    default="202605",
 )
 @parameter(
     "window",
     type=int,
     help="Number of months to extract",
     required=True,
-    default=3,
+    default=16,
 )
 @parameter(
     "model_name",
@@ -322,7 +322,7 @@ def prepare_quantity_data(
         data["val_mfp"] = data["dec_mfp"]
 
         data["contract_end_date"] = data["contract_end_date"].astype(int)
-        data = data[(data["contract_end_date"] >= data["month"]) & (~data["type_ou"].isna())]
+        # data = data[(data["contract_end_date"] >= data["month"]) & (~data["type_ou"].isna())]
 
         data["gain_verif"] = (data["dec_fbp"] - data["val_fbp"]) * data["tarif"]
         data["subside_sans_verification"] = data["dec_fbp"] * data["tarif"]
