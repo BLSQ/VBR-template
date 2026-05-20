@@ -7,6 +7,9 @@
         "1028": "qualite"
     },
     "packages": {
+        "33": "quantite"
+    },
+    "packages_full": {
         "33": "quantite",
         "32": "qualite",
         "26": "quantite",
@@ -20,9 +23,9 @@
         "activity_name": "service",
         "verifiee_indiv": "ver",
         "validee_indiv": "val",
-        "declaree_cam": "dec_cam",
-        "declaree": "dec",
-        "declaree_mfp": "dec_mfp",
+        "nb_cas_remboursement_complets_indiv": "dec_cam",
+        "declaree_indiv": "dec",
+        "nb_cas_remboursement_mfp_80_indiv": "dec_mfp",
         "tarif": "tarif"
     },
     "qualite_attributes": {

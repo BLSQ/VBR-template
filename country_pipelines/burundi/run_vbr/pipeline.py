@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 @parameter(
     "nom_init",
     name="Nom du fichier d'initialisation pour la simulation",
-    default="model",
+    default="ext_1805",
     type=str,
     required=True,
 )
@@ -51,15 +51,15 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=1,
+    default=3,
 )
 @parameter(
     "year_start",
     name="Annee de debut de la simulation",
     type=int,
-    choices=[2023, 2024, 2025],
+    choices=[2023, 2024, 2025, 2026],
     help="Annee de debut de la simulation",
-    default=2024,
+    default=2026,
 )
 @parameter(
     "mois_fin",
@@ -67,15 +67,15 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="Si frequence = trimestre : mettre un mois faisant parti du trimestre",
-    default=12,
+    default=6,
 )
 @parameter(
     "year_fin",
     name="Annee de fin de la simulation",
     type=int,
-    choices=[2023, 2024, 2025],
+    choices=[2023, 2024, 2025, 2026],
     help="Annee de fin de la simulation",
-    default=2024,
+    default=2026,
 )
 @parameter(
     "prix_verif",
@@ -119,7 +119,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     help="Quelle methode de paiement utilise t'on pour payer les centres non-verifies (complet = payer sur base des quantites declarees; taux de validation personnel/ZS : payer sur base du montant declare multiplie par le taux de validation median personnel/de la ZS sur les precedentes periodes)",
     type=str,
     choices=["complet", "tauxvalidation", "tauxvalidationZS"],
-    default="tauxvalidation",
+    default="complet",
 )
 @parameter(
     "quantity_risk_calculation",
@@ -225,7 +225,6 @@ def run_vbr_burundi(
     )
 
 
-@run_vbr_burundi.task
 def create_folders(folder):
     """
     Create the necessay folders for the simulation.
@@ -263,7 +262,6 @@ def create_folders(folder):
     return path_data
 
 
-@run_vbr_burundi.task
 def create_subfolder(folder, subfolder):
     """
     From a folder and a path, create a full path.
@@ -284,7 +282,6 @@ def create_subfolder(folder, subfolder):
     return full_path
 
 
-@run_vbr_burundi.task
 def get_month(mois, year):
     """
     From month and year, get the month in the format YYYYMM.
@@ -304,7 +301,6 @@ def get_month(mois, year):
     return year * 100 + mois
 
 
-@run_vbr_burundi.task
 def run_simulation(
     regions,
     frequence,
@@ -391,7 +387,7 @@ def run_simulation(
         Threshold for the number of services that can have a weighted_ecart_dec_val
         bigger than seuil_max_moyen_risk without the center being high risk
     """
-    for month in [int(str(m)) for m in dates.get_date_series(str(start), str(end), frequence)]:
+    for month in [int(str(m)) for m in toolbox.get_date_series(str(start), str(end), frequence)]:
         if frequence == "trimestre" and month % 100 % 3 != 0:
             continue
 
@@ -448,7 +444,6 @@ def run_simulation(
         df_stats.to_csv(full_path_stats, index=False)
 
 
-@run_vbr_burundi.task
 def get_environment(nom_init):
     """
     Load the simulation initialization data.
@@ -754,7 +749,7 @@ def set_ou_values(ou, frequence, period, nb_period_verif, window):
         ou.quantite["month"] = ou.quantite["month"].astype("Int64").astype(str)
     if pd.api.types.is_numeric_dtype(ou.qualite["month"]):
         ou.qualite["month"] = ou.qualite["month"].astype("Int64").astype(str)
-    ou.set_window(window)
+    toolbox.set_window(ou, window)
     toolbox.get_ecart_median(ou)
     ou.get_diff_subsidies_decval_median()
     ou.get_taux_validation_median()
