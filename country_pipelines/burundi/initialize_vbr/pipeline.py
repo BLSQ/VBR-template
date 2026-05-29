@@ -595,13 +595,13 @@ def clean_quant_data(quant: pd.DataFrame, clean_data: bool, model_name: str) -> 
 
         original_len = len(quant)
         for step in [
-            remove_problematic_services,
-            remove_problematic_ous,
+            # remove_problematic_services,
+            # remove_problematic_ous,
             remove_ver_val_without_dec,
             remove_dec_without_ver_and_val,
             remove_null_tarifs,
-            remove_ver_exceeds_dec,
-            remove_cam_mfp_contamination,
+            # remove_ver_exceeds_dec,
+            # remove_cam_mfp_contamination,
         ]:
             n_before = len(quant)
             quant, outliers = step(quant, outliers)
