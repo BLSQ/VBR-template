@@ -1,13 +1,15 @@
+import functools
+
 import pandas as pd
 
 from RBV_package import dates
 
 import config
 
+from openhexa.sdk import current_run
 from openhexa.toolbox.dhis2.periods import Month, Quarter
 
 from statistics import mean
-from collections.abc import Generator
 
 
 class VBR:
@@ -278,6 +280,10 @@ class Orgunit:
         if pd.api.types.is_numeric_dtype(self.quantite["month"]):
             self.quantite["month"] = self.quantite["month"].astype("Int64").astype(str)
 
+        for col in ["quarter", "month", "service"]:
+            if col in self.quantite.columns:
+                self.quantite[col] = self.quantite[col].astype("category")
+
         self.quantite_period = pd.DataFrame()
         self.quantite_window = pd.DataFrame()
         self.risk_quantite = "unknown"
@@ -354,6 +360,9 @@ class Orgunit:
             It can be "complet" or "tauxval".
         """
         if self.quantite_period.shape[0] > 0:
+            # Use the two quarters preceding this period (not the simulation period),
+            # so each period is subsidised with its own recent history.
+            taux_df = self.get_previous_two_periods(self.period)
             (
                 self.subside_dec_period,
                 self.subside_val_period,
@@ -363,26 +372,21 @@ class Orgunit:
             for service in list_services:
                 quantite_period_service = self.quantite_period[
                     self.quantite_period.service == service
-                ].copy()
+                ]
 
-                self.calculate_mult_factor(mode, quantite_period_service, service)
+                factor = self.calculate_mult_factor(mode, service, taux_df)
 
-                quantite_period_service["subside_sans_verification_taux"] = (
-                    quantite_period_service["subside_sans_verification"]
-                    * quantite_period_service["multiplication_factor"]
-                )
-
-                self.subside_dec_period += quantite_period_service[
+                subside_sans_verification = quantite_period_service[
                     "subside_sans_verification"
                 ].sum()
+
+                self.subside_dec_period += subside_sans_verification
 
                 self.subside_val_period += quantite_period_service[
                     "subside_avec_verification"
                 ].sum()
 
-                self.subside_taux_period += quantite_period_service[
-                    "subside_sans_verification_taux"
-                ].sum()
+                self.subside_taux_period += subside_sans_verification * factor
 
         else:
             self.subside_dec_period = pd.NA
@@ -394,11 +398,6 @@ class Orgunit:
     ) -> None:
         """
         Calculate the gains from verification over the observation window.
-
-        NOTE: THIS CALCULATION IS NOT THE BEST. WE USE THE TAUX OF THE WINDOW TO CALCULATE
-        THE SUBSIDIES FOR NON-VERIFIED CENTERS. IN REALITY, WE SHOULD USE THE TAUX OF THE 2 QUARTERS
-        BEFORE. (WE DO NOT DO THIS YET BECAUSE THERE IS NOT ENOUGH DATA).
-
 
         Parameters
         ----------
@@ -419,16 +418,16 @@ class Orgunit:
 
         for period in list_periods:
             gain_vbr_period = cout
-            quantite_period = self.quantite_window[self.quantite_window[frequence] == period].copy()
+            taux_df = self.get_previous_two_periods(period)
+            quantite_period = self.quantite_window[self.quantite_window[frequence] == period]
             list_services = quantite_period.service.unique()
             for service in list_services:
-                quantite_period_service = quantite_period[quantite_period.service == service].copy()
+                quantite_period_service = quantite_period[quantite_period.service == service]
 
-                self.calculate_mult_factor(payment_mode, quantite_period_service, service)
+                factor = self.calculate_mult_factor(payment_mode, service, taux_df)
                 subside_non_ver = (
-                    quantite_period_service["subside_sans_verification"]
-                    * quantite_period_service["multiplication_factor"]
-                ).sum()
+                    quantite_period_service["subside_sans_verification"].sum() * factor
+                )
                 subside_ver = quantite_period_service["subside_avec_verification"].sum()
                 gain_vbr_period_service = -subside_non_ver + subside_ver
                 gain_vbr_period += gain_vbr_period_service
@@ -438,28 +437,91 @@ class Orgunit:
         self.benefice_vbr_window = mean(gains_vbr)
 
     def calculate_mult_factor(
-        self, mode: str, quantite_period_service: pd.DataFrame, service: str
-    ) -> None:
+        self,
+        mode: str,
+        service: str,
+        taux_df: pd.DataFrame,
+    ) -> float:
         """
         For non-verified centers, calculate the factor we will use to give subsidies.
+
+        The factor is a single scalar broadcast over all rows of the service, so it is
+        returned directly (rather than written as a column) to avoid copying the frame.
+
+        Parameters
+        ----------
+        mode: str
+            The payment method for non-verified centers ("complet" or "tauxval").
+        service: str
+            The service being processed.
+        taux_df: pd.DataFrame
+            The DataFrame containing the average taux de validation for the selected quarters.
+
+        Returns
+        -------
+        float
+            The multiplication factor to apply to the subsidies of the service.
         """
         if mode == "tauxval":
-            taux_validation_service = self.taux_validation_par_service_window.loc[
-                self.taux_validation_par_service_window["service"] == service, "taux_validation"
-            ]
-
+            taux_validation_service = taux_df.loc[taux_df["service"] == service, "taux_validation"]
             if taux_validation_service.empty:
                 # This means that the service was not present in the center in the window period,
                 # but it is in the period of verification.
-                quantite_period_service["multiplication_factor"] = (
-                    self.taux_validation_median_window
-                )
+                factor = taux_df["taux_validation"].median()
             else:
-                quantite_period_service["multiplication_factor"] = taux_validation_service.median()
+                factor = taux_validation_service.median()
+
+            if pd.isna(factor):
+                msg = (
+                    f"Could not compute a taux de validation for center {self.id}, "
+                    f"service {service}: multiplication_factor is NaN."
+                )
+                current_run.log_warning(msg)
+                raise ValueError(msg)
+            return factor
         elif mode == "complet":
-            quantite_period_service["multiplication_factor"] = 1
+            return 1
         else:
             raise Exception(f"Payment method {mode} not recognized.")
+
+    def get_previous_two_periods(self, period: str) -> pd.DataFrame:
+        """Determine which quarters to use for the taux de validation of non-verified centers.
+
+        It uses the previous two quarters relative to "period". If only one is available,
+        we use that one. If none is available, then we use the window periods.
+
+        Parameters
+        ----------
+        period: str
+            The quarter we are computing the subsidies for (format YYYYQX).
+
+        Returns
+        -------
+        pd.DataFrame
+            The DataFrame containing the average taux de validation for the selected quarters.
+        """
+        assert "Q" in str(period), "Period must be in quarter format (YYYYQX)."
+
+        available_quarters = list(self.quantite["quarter"].unique())
+        needed_quarters = [
+            str(months_before(str(period), 3, "quarter")),
+            str(months_before(str(period), 6, "quarter")),
+        ]
+        intersection = list(set(available_quarters).intersection(set(needed_quarters)))
+        if len(intersection) > 0:
+            periods_for_taux = intersection
+        else:
+            window_quarters = list(self.quantite_window["quarter"].unique())
+            if len(window_quarters) > 0:
+                periods_for_taux = window_quarters
+            else:
+                periods_for_taux = [period]
+
+        return (
+            self.quantite[self.quantite["quarter"].isin(periods_for_taux)]
+            .groupby("service", as_index=False, observed=True)["taux_validation"]
+            .mean()
+        )
 
     def calculate_diff_subsidies_period(self, vbr_object: VBR) -> None:
         """
@@ -509,7 +571,7 @@ class Orgunit:
             raise Exception("No ecart column found in the quantitative data.")
 
         self.ecart_mean_per_service_window = (
-            self.quantite_window.groupby("service", as_index=False)[col]
+            self.quantite_window.groupby("service", as_index=False, observed=True)[col]
             .mean()
             .reset_index()
             .rename(columns={col: "ecart_mean"})
@@ -527,7 +589,7 @@ class Orgunit:
         If there is no data, we say that none of the centers are verified.
         """
         self.taux_validation_par_service_window = self.quantite_window.groupby(
-            "service", as_index=False
+            "service", as_index=False, observed=True
         )["taux_validation"].mean()
 
         # Since we have so little data, it makes more sense to do the median directly.
@@ -798,7 +860,7 @@ def months_before(date: str, lag: int, freq: str) -> str:
 
     Returns
     -------
-    int
+    str
         The month/quarter corresponding to the period that is "lag" months before "date"
         (e.g. 201710/2017Q4).
     """
@@ -831,9 +893,12 @@ def months_before(date: str, lag: int, freq: str) -> str:
         raise ValueError("Frequency must be either 'month' or 'quarter'.")
 
 
-def get_date_series(start: str, end: str, type: str) -> Generator:
+def get_date_series(start: str, end: str, type: str) -> list:
     """
     Get a list of consecutive months or quarters between two dates.
+
+    Note: the returned list is cached and shared across callers, so it must be
+    treated as read-only (callers only iterate/stringify it, never mutate it).
 
     Parameters:
     --------------
@@ -852,9 +917,9 @@ def get_date_series(start: str, end: str, type: str) -> Generator:
     if type == "trimestre" or type == "quarter":
         q1 = Quarter.from_string(start)
         q2 = Quarter.from_string(end)
-        range = q1.range(q2)
+        range = [q1] if q1 == q2 else list(q1.range(q2))
     else:
         m1 = Month.from_string(start)
         m2 = Month.from_string(end)
-        range = m1.range(m2)
+        range = [m1] if m1 == m2 else list(m1.range(m2))
     return range

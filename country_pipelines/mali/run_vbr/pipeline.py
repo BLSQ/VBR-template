@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     "model",
     name="Name of the initialization file",
     help="It comes from the first pipeline",
-    default="model_1911",
+    default="model_july",
     type=str,
     required=True,
 )
@@ -41,14 +41,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     type=int,
     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
     help="If frequency = quarter: put a month that is part of the quarter",
-    default=10,
+    default=1,
 )
 @parameter(
     "year_start",
     name="Start year for the simulation",
     type=int,
     choices=[2025, 2026, 2027],
-    default=2025,
+    default=2026,
 )
 @parameter(
     "mois_fin",
@@ -239,10 +239,18 @@ def simulate_period(
     path_verif_group, path_stats_full, path_service_group = create_file_names(
         vbr_object, model, period, path_verif, path_stats, path_service
     )
+    total_ous = sum(len(group.members) for group in vbr_object.groups)
+    processed_ous = 0
     rows = []
     for group in vbr_object.groups:
-        new_row = simulate_period_group(
-            vbr_object, group, period, path_verif_group, path_service_group
+        new_row, processed_ous = simulate_period_group(
+            vbr_object,
+            group,
+            period,
+            path_verif_group,
+            path_service_group,
+            processed_ous,
+            total_ous,
         )
         rows.append(new_row)
 
@@ -256,6 +264,8 @@ def simulate_period_group(
     period: str,
     path_verif_group: str,
     path_service_group: str,
+    processed_ous: int,
+    total_ous: int,
 ):
     """
     Run the simulation for 1 period and 1 group.
@@ -272,14 +282,27 @@ def simulate_period_group(
         Path to store the verification information for the group.
     path_service_group: str
         Path to store the service information for the group.
+    processed_ous: int
+        Number of OUs already processed for this period (across previous groups).
+    total_ous: int
+        Total number of OUs to process for this period (across all groups).
 
     Returns
     -------
     stats: list
         Statistics of the simulation for the group and period.
+    processed_ous: int
+        Updated number of OUs processed for this period after this group.
     """
+    # Log roughly every 10% of the total OUs of the period.
+    log_every = max(1, total_ous // 10)
     for ou in group.members:
         simulate_period_ou(vbr_object, ou, period)
+        processed_ous += 1
+        if processed_ous % log_every == 0 or processed_ous == total_ous:
+            current_run.log_info(
+                f"Period {period}: {processed_ous} / {total_ous} OUs have been processed"
+            )
 
     full_path_verif = os.path.join(
         f"{path_verif_group}-prov___{group.name}.csv",
@@ -301,7 +324,7 @@ def simulate_period_group(
         index=False,
     )
 
-    return stats
+    return stats, processed_ous
 
 
 def simulate_period_ou(vbr_object: VBR, ou: Orgunit, period: str):

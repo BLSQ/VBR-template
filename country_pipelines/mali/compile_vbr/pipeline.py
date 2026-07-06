@@ -243,12 +243,13 @@ def quantity(quant_path: str, output_path: str, db_name: str):
         Name of the quantity risks database.
     """
     output_path = output_path + "quantity_data_compiled.csv"
-    regex_quant = r"^(.+)\.csv$"
+    regex_quant = r"^(.+)_not_cleaned\.csv$"
     files_quant = []
 
     for filename in os.listdir(quant_path):
         match = re.search(regex_quant, filename)
         if match:
+            current_run.log_info(f"Processing quantity file: {filename}")
             df = read_csv(quant_path + filename)
             df = df.with_columns(pl.lit(match.group(1)).alias("model"))
             files_quant.append(df)
