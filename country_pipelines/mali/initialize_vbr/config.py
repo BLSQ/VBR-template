@@ -56,3 +56,4 @@ list_cols_df_services = [
     "Taux of validation median",
     "Ecart median",
 ]
+mali_ou = "cKcuEmNzNF2"

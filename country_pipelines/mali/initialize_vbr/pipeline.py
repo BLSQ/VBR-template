@@ -28,6 +28,7 @@ from toolbox import (
     save_parquet,
 )
 import orgunit
+import config as config_pipeline
 
 
 @pipeline("initialize_vbr")
@@ -37,14 +38,14 @@ import orgunit
     type=str,
     help="Last period to extract data from (either yyyymm eg 202406 or yyyyQt eg 2024Q2)",
     required=True,
-    default="202509",
+    default="202603",
 )
 @parameter(
     "window",
     name="Number of months to consider",
     type=int,
     required=True,
-    default=6,
+    default=12,
 )
 @parameter("model_name", name="Name of the model", type=str, default="model_1911", required=True)
 @parameter(
@@ -81,7 +82,7 @@ import orgunit
     name="Clean quantity data",
     help="Clean the quantity data after extraction.",
     type=bool,
-    default=False,
+    default=True,
 )
 def initialize_vbr(
     period,
@@ -133,6 +134,7 @@ def clean_quantity_data(
     Clean the quantity data before saving it in a pickle file.
 
     There are some cleanings that we always do:
+    (0) Create a list of organisation Units that have no validated data at all
     (1) Remove the rows where both the declared and validated is 0 or null
     (2) Fill the null values with 0.
 
@@ -156,6 +158,14 @@ def clean_quantity_data(
     """
     total_rows = quant.height
     extra_text = " I am removing them." if bool_clean_quant else ""
+
+    ous_with_val = set(
+        quant.filter(pl.col("val").is_not_null()).select("ou").unique().to_series().to_list()
+    )
+    ous_no_val = set(quant.select("ou").unique().to_series().to_list()) - ous_with_val
+    quant = quant.filter(~pl.col("ou").is_in(ous_no_val))
+    output_path = f"{workspace.files_path}/pipelines/initialize_vbr/data/inconsistencies/{model_name}_ous_bad_contract.csv"
+    save_csv(pl.DataFrame({"ou": sorted(ous_no_val)}), Path(output_path))
 
     ser_dec_nan = quant["dec"].is_null()
     if ser_dec_nan.any():
@@ -786,7 +796,7 @@ def extract_data_value_for_indicator_quarter_and_payment(
         A DataFrame containing the data for the specified indicator, quarter and payment mode.
     """
     dataset_id = indicator_dict["data_set_id"]
-    ou_id_request = indicator_dict["ou_list"]
+    ou_id_request = indicator_dict["ou_contract"]
     frequency = indicator_dict["freq"]
     if frequency == "Monthly":
         periods_to_extract = list_months
@@ -835,13 +845,13 @@ def extract_data_values_for_quarter_and_payment(
         os.makedirs(folder_path, exist_ok=True)
 
         if os.path.exists(output_file) and not extract:
-            data_values = pl.read_csv(output_file)
+            data_values = pl.read_csv(output_file, schema_overrides={"value": pl.Float64})
         else:
             data_values = extract_data_value_for_indicator_quarter_and_payment(
                 dhis, list_months, quarter, indicator, indicator_dict
             )
-            if len(data_values) > 0:
-                data_values.write_csv(output_file)
+            data_values.write_csv(output_file)
+            # We also save the empy, as it can be valuable information
 
         if len(data_values) > 0:
             new_dict = {"data": data_values, "frequency": indicator_dict["freq"]}
@@ -907,7 +917,12 @@ def add_metadata_to_config(config, dhis, ous_accessible, ous_contracts) -> dict:
                 ou_id for ou_id in ou_id_dataset if ou_id in ous_accessible
             ]
             indicator_dict["freq"] = response["periodType"]
-            indicator_dict["ou_contract"] = ous_contracts
+            if indicator == "tarif_def":
+                indicator_dict["ou_contract"] = [config_pipeline.mali_ou]
+            else:
+                indicator_dict["ou_contract"] = [
+                    ou_id for ou_id in ous_contracts if ou_id in ous_accessible
+                ]
             payment_dict[indicator] = indicator_dict
         config[payment_mode] = payment_dict
 
@@ -1181,7 +1196,10 @@ def prepare_quantity_data(values_to_use, contracts, setup, ous_ref, model_name) 
                 f"{workspace.files_path}/pipelines/initialize_vbr/packages/{payment}/{period}.csv"
             )
             if os.path.exists(file_path):
-                df = pl.read_csv(file_path)
+                df = pl.read_csv(file_path, schema_overrides={"value": pl.Float64})
+                if df.is_empty():
+                    current_run.log_info(f"File {file_path} is empty. Skipping.")
+                    continue
                 for col in ["declare", "valide", "tarif_def"]:
                     df = df.with_columns(pl.col(col).cast(pl.Float64))
                 dfs.append(df)
