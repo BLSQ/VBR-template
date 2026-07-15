@@ -193,8 +193,8 @@ def extract_dataset(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
     periods: list[str] | None = None,
-    org_units: list[str] = None,
-    org_unit_groups: list[str] = None,
+    org_units: list[str] | None = None,
+    org_unit_groups: list[str] | None = None,
     include_children: bool = False,
     last_updated: datetime | None = None,
 ) -> pl.DataFrame:
