@@ -75,6 +75,87 @@ def validate_data_values(
     return pl.DataFrame(valid_rows, schema=data_values.schema)
 
 
+def validate_ou_mapping(ous_source: pl.DataFrame, ous_target: pl.DataFrame) -> None:
+    """Check that every configured OU mapping UID exists in its instance.
+
+    Raises ValueError if any source or target UID is missing, so a typo fails the run
+    before any data is posted rather than misfiling values.
+    """
+    if not config.ou_mapping:
+        current_run.log_info("No organisation unit mapping configured; OU UIDs pass through.")
+        return
+
+    current_run.log_info(f"Validating {len(config.ou_mapping)} organisation unit mapping(s)...")
+    source_names = dict(ous_source.select(["id", "name"]).iter_rows())
+    target_names = dict(ous_target.select(["id", "name"]).iter_rows())
+
+    for label, uids, names in (
+        ("source", config.ou_mapping.keys(), source_names),
+        ("target", config.ou_mapping.values(), target_names),
+    ):
+        missing = set(uids) - set(names)
+        if missing:
+            msg = f"{label} organisation unit IDs in mapping not found in DHIS2: {missing}"
+            current_run.log_error(msg)
+            raise ValueError(msg)
+
+    for source_uid, target_uid in config.ou_mapping.items():
+        current_run.log_info(
+            f"  {source_uid} ({source_names[source_uid]}) → "
+            f"{target_uid} ({target_names[target_uid]})"
+        )
+
+
+def remap_organisation_units(data_values: pl.DataFrame) -> tuple[pl.DataFrame, int]:
+    """Translate source OU UIDs to their target-instance equivalents.
+
+    UIDs absent from config.ou_mapping are left untouched, since most OUs share the same
+    UID in both instances.
+
+    Returns
+    -------
+    tuple[pl.DataFrame, int]
+        Data with organisation_unit_id remapped, and the number of rows remapped.
+    """
+    if not config.ou_mapping:
+        return data_values, 0
+
+    matched = (
+        data_values.filter(pl.col("organisation_unit_id").is_in(list(config.ou_mapping)))
+        .group_by("organisation_unit_id")
+        .len()
+        .sort("organisation_unit_id")
+    )
+    remapped_count = int(matched["len"].sum()) if len(matched) else 0
+
+    if remapped_count == 0:
+        current_run.log_info(
+            f"OU remapping: no rows matched the {len(config.ou_mapping)} configured mapping(s)"
+        )
+        return data_values, 0
+
+    current_run.log_info(f"OU remapping: {remapped_count} rows remapped to target OU UIDs")
+    for source_uid, count in matched.iter_rows():
+        current_run.log_info(f"  {source_uid} → {config.ou_mapping[source_uid]}: {count} rows")
+
+    return (
+        data_values.with_columns(pl.col("organisation_unit_id").replace(config.ou_mapping)),
+        remapped_count,
+    )
+
+
+def log_datapoints_per_period(data_values: pl.DataFrame) -> None:
+    """Log the number of data points that will be pushed for each period."""
+    if len(data_values) == 0:
+        current_run.log_info("No data points to push.")
+        return
+
+    counts = data_values.group_by("period").len().sort("period")
+    current_run.log_info(f"Data points to push per period ({counts.height} periods):")
+    for period, count in counts.iter_rows():
+        current_run.log_info(f"  {period}: {count} data points")
+
+
 def prepare_data_value_payload(data_values: pl.DataFrame) -> list[dict[str, Any]]:
     """Rename columns and convert to DHIS2 API payload format.
 

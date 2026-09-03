@@ -36,7 +36,10 @@ def get_start_end_date(
 def get_periods_from_start_end_dates(start_date, end_date, period_type) -> list[str]:
     start_period = isodate_to_period_type(start_date, period_type)
     end_period = isodate_to_period_type(end_date, period_type)
-    periods = get_range(start_period, end_period)
+    if str(start_period) == str(end_period):
+        periods = [start_period]
+    else:
+        periods = get_range(start_period, end_period)
     if not periods:
         raise ValueError(
             f"No periods found between {start_date} and {end_date} for period type '{period_type}'. "

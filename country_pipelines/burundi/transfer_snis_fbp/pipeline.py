@@ -19,7 +19,11 @@ from openhexa.sdk import (
     pipeline,
     workspace,
 )
-from openhexa.toolbox.dhis2.dataframe import get_data_elements, get_category_option_combos
+from openhexa.toolbox.dhis2.dataframe import (
+    get_data_elements,
+    get_category_option_combos,
+    get_organisation_units,
+)
 
 import config
 from api import (
@@ -33,7 +37,13 @@ from api import (
 )
 from utils import read_csv, save_outputs
 from dates import get_start_end_date, get_periods_from_start_end_dates
-from mappings import prepare_data_value_payload, validate_data_values
+from mappings import (
+    log_datapoints_per_period,
+    prepare_data_value_payload,
+    remap_organisation_units,
+    validate_data_values,
+    validate_ou_mapping,
+)
 
 
 @pipeline("dhis2_to_dhis2_data_elements")
@@ -64,14 +74,14 @@ from mappings import prepare_data_value_payload, validate_data_values
     type=str,
     name="Start Date (YYYY-MM-DD)",
     required=False,
-    default="2025-01-01",
+    default="2026-01-01",
 )
 @parameter(
     "end_date",
     type=str,
     name="End Date (YYYY-MM-DD)",
     required=False,
-    default="2026-05-31",
+    default="2026-08-31",
 )
 @parameter(
     "use_relative_dates",
@@ -93,7 +103,7 @@ from mappings import prepare_data_value_payload, validate_data_values
     "dry_run",
     type=bool,
     name="Dry Run Mode",
-    default=False,
+    default=True,
     required=False,
 )
 def dhis2_to_dhis2_data_elements(
@@ -119,12 +129,16 @@ def dhis2_to_dhis2_data_elements(
     des_target = get_data_elements(target_dhis2)
     cocs_source = get_category_option_combos(source_dhis2)
     cocs_target = get_category_option_combos(target_dhis2)
+    ous_source = get_organisation_units(source_dhis2)
+    ous_target = get_organisation_units(target_dhis2)
     datasets_source = get_datasets_as_dict(source_dhis2)
     des_coc_target, des_coc_target_list = get_coc_per_des(target_dhis2)
     des_source.write_parquet(output_dir / "des_snis.parquet")
     des_target.write_parquet(output_dir / "des_fbp.parquet")
     cocs_source.write_parquet(output_dir / "cocs_snis.parquet")
     cocs_target.write_parquet(output_dir / "cocs_fbp.parquet")
+    ous_source.write_parquet(output_dir / "ous_snis.parquet")
+    ous_target.write_parquet(output_dir / "ous_fbp.parquet")
     json.dump(
         datasets_source, (output_dir / "datasets_snis.json").open("w", encoding="utf-8"), indent=2
     )
@@ -140,6 +154,7 @@ def dhis2_to_dhis2_data_elements(
     validate_mapping_ids(
         mapping_data, des_source, des_target, cocs_source, cocs_target, datasets_source
     )
+    validate_ou_mapping(ous_source, ous_target)
 
     start_date, end_date = get_start_end_date(
         use_relative_dates=use_relative_dates,
@@ -164,6 +179,8 @@ def dhis2_to_dhis2_data_elements(
             coc_filtered_count=0,
             validation_dropped=0,
             dedup_dropped=0,
+            ou_dropped=0,
+            ou_remapped=0,
             post_results={"status": "no_data", "imported": 0, "updated": 0, "ignored": 0},
             dry_run=dry_run,
         )
@@ -177,6 +194,8 @@ def dhis2_to_dhis2_data_elements(
     validation_dropped = 0
     coc_filtered_count = 0
     dedup_dropped = 0
+    ou_dropped = 0
+    ou_remapped = 0
     if transformed_count == 0:
         current_run.log_warning("No data to post after transformation")
         post_results = {"status": "no_data", "imported": 0, "updated": 0, "ignored": 0}
@@ -191,12 +210,15 @@ def dhis2_to_dhis2_data_elements(
         coc_filtered_count = len(transformed_data)
         transformed_data = validate_data_values(transformed_data, target_dhis2, des_target)
         validation_dropped = coc_filtered_count - len(transformed_data)
+        transformed_data, ou_remapped = remap_organisation_units(transformed_data)
         data_to_post = deduplicate_data(transformed_data)
         dedup_dropped = len(transformed_data) - len(data_to_post)
         check_datasets_associated(target_dhis2, data_to_post)
-        sel_data = select_some_data(data_to_post)
-        sel_data.write_parquet(output_dir / "imported_data.parquet")
-        payload = prepare_data_value_payload(sel_data)
+        data_to_post_ous = filter_non_existing_ous(data_to_post)
+        ou_dropped = len(data_to_post) - len(data_to_post_ous)
+        data_to_post_ous.write_parquet(output_dir / "imported_data.parquet")
+        log_datapoints_per_period(data_to_post_ous)
+        payload = prepare_data_value_payload(data_to_post_ous)
         current_run.log_info(f"Sending {len(payload)} records to target DHIS2...")
         post_results = post_to_target(target_dhis2, payload, dry_run)
 
@@ -207,38 +229,39 @@ def dhis2_to_dhis2_data_elements(
         coc_filtered_count=coc_filtered_count,
         validation_dropped=validation_dropped,
         dedup_dropped=dedup_dropped,
+        ou_dropped=ou_dropped,
+        ou_remapped=ou_remapped,
         post_results=post_results,
         dry_run=dry_run,
     )
     save_outputs(output_dir, payload, post_results, summary)
 
 
-def select_some_data(data: pl.DataFrame) -> pl.DataFrame:
-    """We want to start with a test."""
-    return data.filter(
-        (
-            pl.col("period").is_in(
-                [
-                    "202501",
-                    "202502",
-                    "202503",
-                    "202504",
-                    "202505",
-                    "202506",
-                    "202507",
-                    "202508",
-                    "202509",
-                    "202510",
-                    "202511",
-                    "202512",
-                ]
-            )
-        )
-    )
-
-
 def add_attribute_option_combo_id(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(pl.lit(config.att_default).alias("attribute_option_combo_id"))
+
+
+def filter_non_existing_ous(df: pl.DataFrame) -> pl.DataFrame:
+    """Some OUs are not present currently in our DHIS2 instance.
+
+    Parameters
+    ----------
+    df : pl.DataFrame
+        DataFrame containing a column "organisation_unit_id" with OU IDs to check.
+
+    Returns
+    -------
+    pl.DataFrame
+        Filtered DataFrame with rows containing non-accessible OUs removed.
+    """
+    bad_ous = df.filter(pl.col("organisation_unit_id").is_in(config.non_accessible_ous))
+    if len(bad_ous) > 0:
+        current_run.log_warning(
+            f"Filtering out {len(bad_ous)} records with non-accessible organisation units: "
+            f"{bad_ous['organisation_unit_id'].unique().to_list()}"
+        )
+    df = df.filter(~pl.col("organisation_unit_id").is_in(config.non_accessible_ous))
+    return df
 
 
 def deduplicate_data(df: pl.DataFrame) -> pl.DataFrame:
@@ -530,6 +553,8 @@ def generate_summary(
     coc_filtered_count: int,
     validation_dropped: int,
     dedup_dropped: int,
+    ou_dropped: int,
+    ou_remapped: int,
     post_results: dict[str, Any],
     dry_run: bool,
 ) -> dict[str, Any]:
@@ -549,6 +574,8 @@ def generate_summary(
             "coc_filtered_records": coc_filtered_count,
             "validation_dropped": validation_dropped,
             "dedup_dropped": dedup_dropped,
+            "ou_dropped": ou_dropped,
+            "ou_remapped": ou_remapped,
         },
         "import": {
             "status": status,
@@ -563,7 +590,7 @@ def generate_summary(
         },
     }
 
-    records_sent = coc_filtered_count - validation_dropped - dedup_dropped
+    records_sent = coc_filtered_count - validation_dropped - dedup_dropped - ou_dropped
     imported = summary["import"]["imported"]
     updated = summary["import"]["updated"]
     ignored = summary["import"]["ignored"]
@@ -599,6 +626,16 @@ def generate_summary(
     if dedup_dropped > 0:
         current_run.log_warning(
             f"  → {dedup_dropped} duplicate records removed (same DE/COC/OU/period)"
+        )
+
+    if ou_remapped > 0:
+        current_run.log_info(
+            f"  → {ou_remapped} records remapped to a different target organisation unit"
+        )
+
+    if ou_dropped > 0:
+        current_run.log_warning(
+            f"  → {ou_dropped} records dropped: organisation unit not accessible in target"
         )
 
     current_run.log_info(f"Records sent to target DHIS2: {records_sent}")

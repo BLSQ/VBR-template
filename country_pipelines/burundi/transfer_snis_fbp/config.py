@@ -29,3 +29,10 @@ REQUIRED_ID_COLUMNS = [
     "coc_id_fbp_cam",
     "coc_id_fbp_total",
 ]
+
+
+non_accessible_ous = ["oaHBDYGd8pY"]
+
+ou_mapping = {
+    "sHLJeiJB77o": "fKYKzwnIRit",  # CDS Mubone(DS Mutimbuzi) -> CDS Mubone(DS Kabezi)
+}
