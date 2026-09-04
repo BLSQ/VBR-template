@@ -440,6 +440,12 @@ class Orgunit:
         self.nb_services_moyen_risk = None
         self.nb_services = None
 
+        self.ecart_median = None
+        self.ecart_median_dec_ver = None
+        self.ecart_max = None
+        self.ecart_max_dec_ver = None
+        self.ecart_median_per_service = None
+
         self.subside_dec_period = None
         self.subside_val_period = None
         self.subside_taux_period = None

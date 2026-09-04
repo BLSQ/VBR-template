@@ -230,7 +230,9 @@ def get_thresholds(verification_gain_low, verification_gain_mod):
     return dict_threholds
 
 
-def define_risky_services(center, seuil_max_bas_risk, seuil_max_moyen_risk):
+def define_risky_services(
+    center, seuil_max_bas_risk, seuil_max_moyen_risk, ecart_aggregation="median"
+):
     """
     Define the number of risky services for the center.
 
@@ -242,37 +244,31 @@ def define_risky_services(center, seuil_max_bas_risk, seuil_max_moyen_risk):
         Maximum value of the weighted_ecart_dec_val for which the service is considered at low risk.
     seuil_max_moyen_risk: float
         Maximum value of the weighted_ecart_dec_val for which the service is considered at medium risk.
+    ecart_aggregation: str
+        Which aggregation of the monthly ecarts we classify on, "median" or "max".
     """
+    if ecart_aggregation == "median":
+        col_weighted, col_dec_ver = "ecart_median", "ecart_median_dec_ver"
+    elif ecart_aggregation == "max":
+        col_weighted, col_dec_ver = "ecart_max", "ecart_max_dec_ver"
+    else:
+        raise ValueError(f"Unknown ecart_aggregation: {ecart_aggregation}")
+
+    ecarts_weighted = center.ecart_median_per_service[col_weighted].values
+    ecarts_dec_ver = center.ecart_median_per_service[col_dec_ver].values
+
     center.nb_services_risky = len(
-        [
-            ecart
-            for ecart in center.ecart_median_per_service.ecart_median.values
-            if ecart >= seuil_max_bas_risk
-        ]
+        [ecart for ecart in ecarts_weighted if ecart >= seuil_max_bas_risk]
     )
     center.nb_services_moyen_risk = len(
-        [
-            ecart
-            for ecart in center.ecart_median_per_service.ecart_median.values
-            if ecart >= seuil_max_moyen_risk
-        ]
+        [ecart for ecart in ecarts_weighted if ecart >= seuil_max_moyen_risk]
     )
-    center.nb_services = len(
-        [ecart for ecart in center.ecart_median_per_service.ecart_median.values]
-    )
+    center.nb_services = len([ecart for ecart in ecarts_weighted])
     center.nb_services_risky_dec_ver = len(
-        [
-            ecart
-            for ecart in center.ecart_median_per_service.ecart_median_dec_ver.values
-            if ecart >= seuil_max_bas_risk
-        ]
+        [ecart for ecart in ecarts_dec_ver if ecart >= seuil_max_bas_risk]
     )
     center.nb_services_moyen_risk_dec_ver = len(
-        [
-            ecart
-            for ecart in center.ecart_median_per_service.ecart_median_dec_ver.values
-            if ecart >= seuil_max_moyen_risk
-        ]
+        [ecart for ecart in ecarts_dec_ver if ecart >= seuil_max_moyen_risk]
     )
 
 

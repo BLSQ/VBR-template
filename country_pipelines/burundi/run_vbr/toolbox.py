@@ -28,6 +28,8 @@ def get_verification_information(self):
             ou.nb_services_moyen_risk,
             ou.ecart_median_dec_ver,
             ou.nb_services_moyen_risk_dec_ver,
+            ou.ecart_max,
+            ou.ecart_max_dec_ver,
             ou.benefice_vbr,
             ou.taux_validation,
             ou.risk_weighted_ecart,
@@ -44,24 +46,25 @@ def get_verification_information(self):
 
 def get_ecart_median(self):
     """
-    Get the median of the ecart, in general and per service.
+    Get the median and the max of the ecart, in general and per service.
 
     The ecart is a number from 0 to 1 that represents the difference between
         the declared, verified and validated values.
     The closer to 0, the better the center is doing.
+
+    Both aggregations of the monthly ecarts are always computed.
+    Which one is used for the risk is decided in define_risky_services.
     """
-    self.ecart_median_per_service = (
-        self.quantite_window.groupby("service", as_index=False)
-        .agg({"ecart_dec_ver": "median", "weighted_ecart_dec_val": "median"})
-        .rename(
-            columns={
-                "ecart_dec_ver": "ecart_median_dec_ver",
-                "weighted_ecart_dec_val": "ecart_median",
-            }
-        )
+    self.ecart_median_per_service = self.quantite_window.groupby("service", as_index=False).agg(
+        ecart_median_dec_ver=("ecart_dec_ver", "median"),
+        ecart_median=("weighted_ecart_dec_val", "median"),
+        ecart_max_dec_ver=("ecart_dec_ver", "max"),
+        ecart_max=("weighted_ecart_dec_val", "max"),
     )
     self.ecart_median = self.ecart_median_per_service["ecart_median"].median()
     self.ecart_median_dec_ver = self.ecart_median_per_service["ecart_median_dec_ver"].median()
+    self.ecart_max = self.ecart_median_per_service["ecart_max"].max()
+    self.ecart_max_dec_ver = self.ecart_median_per_service["ecart_max_dec_ver"].max()
 
 
 def get_statistics(self, period):

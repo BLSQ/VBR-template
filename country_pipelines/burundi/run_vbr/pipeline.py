@@ -129,6 +129,14 @@ warnings.filterwarnings("ignore", category=FutureWarning)
     default="ecartdecver",
 )
 @parameter(
+    "ecart_aggregation",
+    name="Aggregation des ecarts mensuels utilisee pour le risque",
+    help="La mediane et le max sont toujours calcules et presents dans les resultats. Ce choix determine lequel est utilise pour le calcul du risque (max : un seul mois au-dessus du seuil suffit a classer la FOSA)",
+    type=str,
+    choices=["median", "max"],
+    default="median",
+)
+@parameter(
     "seuil_max_bas_risk",
     name="Seuil maximal pour categorie de risque faible",
     type=float,
@@ -185,6 +193,7 @@ def run_vbr_burundi(
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
+    ecart_aggregation,
 ):
     regions = get_environment(nom_init)
     start = get_month(mois_start, year_start)
@@ -222,6 +231,7 @@ def run_vbr_burundi(
         quantity_risk_calculation,
         verification_gain_low,
         verification_gain_mod,
+        ecart_aggregation,
     )
 
 
@@ -323,6 +333,7 @@ def run_simulation(
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
+    ecart_aggregation,
 ):
     """
     Run the simulation.
@@ -386,6 +397,9 @@ def run_simulation(
     max_nb_services: int
         Threshold for the number of services that can have a weighted_ecart_dec_val
         bigger than seuil_max_moyen_risk without the center being high risk
+    ecart_aggregation: str
+        Which aggregation of the monthly ecarts is used for the risk, "median" or "max".
+        It is inputed by the user.
     """
     for month in [int(str(m)) for m in toolbox.get_date_series(str(start), str(end), frequence)]:
         if frequence == "trimestre" and month % 100 % 3 != 0:
@@ -412,6 +426,7 @@ def run_simulation(
             quantity_risk_calculation,
             verification_gain_low,
             verification_gain_mod,
+            ecart_aggregation,
         )
 
         period = set_period(frequence, month)
@@ -436,6 +451,7 @@ def run_simulation(
                 quantity_risk_calculation,
                 verification_gain_low,
                 verification_gain_mod,
+                ecart_aggregation,
             )
             rows.append(new_row)
 
@@ -486,6 +502,7 @@ def create_file_names(
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
+    ecart_aggregation,
 ):
     """
     Create the file names where the results will be stored
@@ -534,6 +551,9 @@ def create_file_names(
     max_nb_services: int
         Threshold for the number of services that can have a weighted_ecart_dec_val
         bigger than seuil_max_moyen_risk without the center being high risk
+    ecart_aggregation: str
+        Which aggregation of the monthly ecarts is used for the risk, "median" or "max".
+        It is inputed by the user.
 
 
     Returns
@@ -560,6 +580,7 @@ def create_file_names(
         f"-qtrisk___{quantity_risk_calculation}"
         f"-vglow___{verification_gain_low}"
         f"-vgmod___{verification_gain_mod}"
+        f"-agg___{ecart_aggregation}"
     )
 
     path_verif_per_group = os.path.join(path_verif, file_name_verif)
@@ -579,6 +600,7 @@ def create_file_names(
         f"-qtrisk___{quantity_risk_calculation}"
         f"-vglow___{verification_gain_low}"
         f"-vgmod___{verification_gain_mod}"
+        f"-agg___{ecart_aggregation}"
         ".csv"
     )
 
@@ -634,6 +656,7 @@ def simulate_month_group(
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
+    ecart_aggregation,
 ):
     """
     Run the simulation for a particular month.
@@ -676,6 +699,9 @@ def simulate_month_group(
     max_nb_services: int
         Threshold for the number of services that can have a weighted_ecart_dec_val
         bigger than seuil_max_moyen_risk without the center being high risk
+    ecart_aggregation: str
+        Which aggregation of the monthly ecarts is used for the risk, "median" or "max".
+        It is inputed by the user.
 
     Returns
     -------
@@ -699,6 +725,7 @@ def simulate_month_group(
             quantity_risk_calculation,
             verification_gain_low,
             verification_gain_mod,
+            ecart_aggregation,
         )
 
     full_path_verif = os.path.join(
@@ -771,6 +798,7 @@ def process_ou(
     quantity_risk_calculation,
     verification_gain_low,
     verification_gain_mod,
+    ecart_aggregation,
 ):
     """
     Process a particular Organizational Unit.
@@ -808,6 +836,9 @@ def process_ou(
     max_nb_services: int
         Threshold for the number of services that can have a weighted_ecart_dec_val
         bigger than seuil_max_moyen_risk without the center being high risk
+    ecart_aggregation: str
+        Which aggregation of the monthly ecarts is used for the risk, "median" or "max".
+        It is inputed by the user.
     """
     set_ou_values(ou, frequence, period, nb_period_verif, window)
 
@@ -819,7 +850,12 @@ def process_ou(
 
     ou.define_gain_quantities(group.cout_verification_centre)
 
-    define_risky_services(ou, seuil_max_bas_risk, seuil_max_moyen_risk)
+    define_risky_services(
+        ou,
+        seuil_max_bas_risk,
+        seuil_max_moyen_risk,
+        ecart_aggregation=ecart_aggregation,
+    )
 
     if eligible_for_vbr(ou):
         ou.risk_weighted_ecart = categorize_quantity_ecart(
