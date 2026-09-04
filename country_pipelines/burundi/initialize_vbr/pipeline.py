@@ -1084,6 +1084,7 @@ def get_package_values(
                     package["activities"],
                     package_id,
                     f"{workspace.files_path}/pipelines/initialize_vbr/packages",
+                    extract,
                 )
                 # Here, we input the DHIS2 connection, the degree of external reference, the list of IDs of the organization units,
                 # the periods we are interested in, the activities we are interested in and the package ID.
@@ -1108,6 +1109,7 @@ def fetch_data_values(
     activities: list,
     package_id: int,
     path: str,
+    extract: bool,
 ) -> None:
     """
     Get the datavalues from DHIS2.
@@ -1128,9 +1130,12 @@ def fetch_data_values(
         The ID of the package we are interested in.
     path: str
         The path where the packages are stored.
+    extract: bool
+        If True, re-fetch every period from DHIS2, overwriting any CSV already on disk.
+        If False, periods whose CSV already exists are skipped.
     """
     for monthly_period in periods:
-        if os.path.exists(f"{path}/{package_id}/{monthly_period}.csv"):
+        if not extract and os.path.exists(f"{path}/{package_id}/{monthly_period}.csv"):
             current_run.log_info(
                 f"Data for package {package_id} for {monthly_period} already fetched"
             )
