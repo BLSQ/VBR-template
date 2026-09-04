@@ -21,6 +21,8 @@ list_cols_df_verification = [
     "nb_services_above_seuil_weighted_ecart",
     "median_dec_ver_ecart",
     "nb_services_above_seuil_dec_ver_ecart",
+    "max_weighted_ecart",
+    "max_dec_ver_ecart",
     "benefice_complet_vbr",
     "taux_validation",
     "categorie_risque_weighted_ecart",
